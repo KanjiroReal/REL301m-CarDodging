@@ -24,7 +24,7 @@ class CarDodgingEnv(gym.Env):
         CarDodgingEnv: Một instance của môi trường
     """
     
-    metadata = {"render_modes": ["human"], "render_fps": 30}
+    metadata = {"render_modes": ["human"], "render_fps": 60}
 
     def __init__(self):
         """Khởi tạo môi trường với các thông số cơ bản

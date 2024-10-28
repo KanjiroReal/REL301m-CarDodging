@@ -134,7 +134,7 @@ def create_dqn_agent(env: gym.Env, config: Dict[str, Any] = None) -> DQN:
             'exploration_fraction': 0.2,  # Phần thời gian dành cho khám phá
             'exploration_initial_eps': 1.0,  # Epsilon ban đầu cho khám phá
             'exploration_final_eps': 0.02,  # Epsilon cuối cùng cho khám phá
-            'verbose': 1,  # Mức độ thông tin hiển thị (1: hiển thị thông tin)
+            'verbose': 1,  
             'policy_kwargs': dict(
                 net_arch=[512, 256, 128, 64],  # Kiến trúc mạng neural (4 lớp ẩn)
                 features_extractor_kwargs=dict(features_dim=256)  # Số chiều đầu ra của feature extractor
@@ -151,7 +151,7 @@ def train_agent(agent: DQN, total_timesteps: int, save_path: str,
     """
     os.makedirs(save_path, exist_ok=True)
 
-    best_model_path = os.path.join(save_path, 'best_model.zip')
+    best_model_path = os.path.join(save_path, 'final_model.zip')
     if load_best and os.path.exists(best_model_path):
         print(f"Đang tải best model từ {best_model_path}")
         agent = DQN.load(best_model_path, env=agent.env)
