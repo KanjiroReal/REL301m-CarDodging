@@ -2,12 +2,15 @@
     "env_config": {
         "num_lanes": 5,
         "agent_limit_tick": 0.3,
-        "penalty": -50,
-        "reward": 1,
         "spawn_interval": 0.5,
         "max_steps": 10000,
         "obstacle_speed": 480,
         "render_fps": 120,
+        "reward_config": {
+            "reward_interval": 1.0,
+            "points_per_second": 1,
+            "collision_penalty": -10
+        },
         "window_size": {
             "game_width": 500,
             "game_height": 800,
@@ -31,7 +34,7 @@
         "target_update_interval": 500,
         "exploration_initial_eps": 1.0,
         "exploration_final_eps": 0.02,
-        "exploration_decay": 0.2,
+        "exploration_decay": 0.05,
         "device": "auto",
         "input_shape": [3, 84, 84],
         "n_actions": 3,
@@ -41,12 +44,12 @@
                 {"filters": 64, "kernel_size": 4, "stride": 2},
                 {"filters": 64, "kernel_size": 3, "stride": 1}
             ],
-            "fc_layers": [128, 64]
+            "fc_layers": [256, 128, 64]
         }
     },
     "training_config": {
         "total_timesteps": 10000,
-        "training_minutes": 60,
+        "training_minutes": 100,
         "use_time_limit": true,
         "learning_method": "dqn",
         "render_training": true,

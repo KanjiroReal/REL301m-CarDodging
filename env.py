@@ -55,8 +55,6 @@ class CarDodgingEnv(gym.Env):
         # Khởi tạo các thông số từ config
         self.num_lanes = config["num_lanes"]
         self.agent_limit_tick = config["agent_limit_tick"]
-        self.penalty = config["penalty"]
-        self.reward = config["reward"]
         self.spawn_interval = config["spawn_interval"]
         self.max_steps = config["max_steps"]
         self.obstacle_speed = config["obstacle_speed"]
@@ -120,7 +118,25 @@ class CarDodgingEnv(gym.Env):
             
         # Dictionary để lưu trữ obstacle image được chọn cho mỗi obstacle
         self.obstacle_images = {}
-
+        
+        # Load reward config
+        reward_config = config.get("reward_config", {
+            "reward_interval": 1.0,
+            "points_per_second": 1,
+            "collision_penalty": -10
+        })
+        
+        self.reward_interval = reward_config["reward_interval"]
+        self.points_per_second = reward_config["points_per_second"]
+        self.collision_penalty = reward_config["collision_penalty"]
+        
+        # Thêm biến theo dõi thời gian
+        self.start_time = None
+        self.elapsed_time = 0
+        self.last_reward_time = 0
+        self.current_reward = 0
+        self.max_reward = 0
+        
     def reset(self, seed=None, options=None):
         """Khởi tạo lại trạng thái môi trường về ban đầu
         
@@ -146,6 +162,12 @@ class CarDodgingEnv(gym.Env):
         
         self.obstacle_images = {}  # Reset obstacle images dictionary
         
+        # Reset các biến thời gian
+        self.start_time = time.time()
+        self.last_reward_time = self.start_time
+        self.elapsed_time = 0
+        self.current_reward = 0
+        
         observation = self._get_obs()
         info = {}
         
@@ -155,7 +177,7 @@ class CarDodgingEnv(gym.Env):
         """Sinh ra obstacle mới trên một làn đường ngẫu nhiên đang trống
         
         Args:
-            Không có tham số đầu vào
+            Không c tham số đầu vào
             
         Returns:
             None
@@ -184,6 +206,19 @@ class CarDodgingEnv(gym.Env):
         self.steps += 1
         current_time = time.time()
         elapsed = current_time - self.last_update_time
+        
+        # Cập nhật thời gian trôi qua
+        self.elapsed_time = current_time - self.start_time
+        
+        # Tính số giây đã trôi qua kể từ lần reward cuối
+        time_since_last_reward = current_time - self.last_reward_time
+        
+        # Tính số reward cần cộng thêm
+        reward_points = int(time_since_last_reward / self.reward_interval) * self.points_per_second
+        
+        if reward_points > 0:
+            # Cập nhật thời điểm reward cuối
+            self.last_reward_time = current_time - (time_since_last_reward % self.reward_interval)
         
         # Update game logic với timestep cố định
         self.last_update_time = current_time
@@ -245,14 +280,30 @@ class CarDodgingEnv(gym.Env):
             done = True
             # print(f"\nKết thúc epdisode do đã hết {self.max_steps} step!")
         
-        reward = self.reward if not done else self.penalty
-        self.current_reward += reward  # Cập nhật reward hiện tại
-        self.max_reward = max(self.max_reward, self.current_reward)  # Cập nhật max reward
+        if done:
+            step_reward = self.collision_penalty
+        else:
+            # Tính reward dựa trên thời gian sống sót
+            step_reward = reward_points
+        
+        # Cập nhật current_reward và max_reward
+        self.current_reward += step_reward
+        self.max_reward = max(self.max_reward, self.current_reward)
+        
+        if self.steps >= self.max_steps:
+            done = True
         
         observation = self._get_obs()
         info = self._get_state_info()
         
-        return observation, reward, done, False, info
+        # Thêm thông tin thời gian và điểm vào info
+        info.update({
+            'elapsed_time': self.elapsed_time,
+            'current_reward': self.current_reward,
+            'points_per_second': self.points_per_second
+        })
+        
+        return observation, step_reward, done, False, info
 
     def _get_state_info(self):
         """Lấy thông tin về trạng thái hiện tại của môi trường
@@ -315,11 +366,19 @@ class CarDodgingEnv(gym.Env):
             side_panel = pygame.Surface((self.side_panel_width, self.window_size[1]))
             side_panel.fill((240, 240, 240))
             
-            # Vẽ thông tin reward trên panel phải
-            current_reward_text = self.font.render(f"Current: {self.current_reward}", True, (0, 100, 0))
-            max_reward_text = self.font.render(f"Max: {self.max_reward}", True, (0, 0, 100))
-            side_panel.blit(current_reward_text, (10, 20))
-            side_panel.blit(max_reward_text, (10, 50))
+            # Hiển thị thời gian
+            time_text = self.font.render(f"Time: {self.elapsed_time:.1f}s", True, (0, 0, 0))
+            
+            # Hiển thị điểm
+            current_reward_text = self.font.render(f"Score: {self.current_reward}", True, (0, 100, 0))
+            max_reward_text = self.font.render(f"Best: {self.max_reward}", True, (0, 0, 100))
+            
+            side_panel.blit(time_text, (10, 20))
+            side_panel.blit(current_reward_text, (10, 50))
+            side_panel.blit(max_reward_text, (10, 80))
+            
+            side_panel.blit(self.font.render(f"Survive in {self.reward_interval:.0f}s: +{self.points_per_second}", True, (0, 200, 0)), (10, 110))
+            side_panel.blit(self.font.render(f"Collision: {self.collision_penalty}", True, (255, 0, 0)), (10, 140))
             
             # Vẽ đường phân cách bên trái panel phải
             pygame.draw.line(self.screen, (150, 150, 150),

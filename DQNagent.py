@@ -57,10 +57,12 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
         obs, _ = env.reset()
         step = 0
         start_time = time.time()
+        last_update = start_time
         episode_count = 0
         total_rewards = 0
         current_episode_reward = 0
         episode_losses = []
+        max_survival_time = 0
         
         # Lấy time limit và render config từ config
         use_time_limit = agent.training_config.get('use_time_limit', False)
@@ -72,7 +74,6 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
         pbar = tqdm(total=time_limit if use_time_limit else total_timesteps,
                    desc='Training Progress',
                    unit='s' if use_time_limit else ' steps')
-        
         last_minute = -1
         
         while True:
@@ -106,11 +107,43 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
             elapsed_time = current_time - start_time
             elapsed_minutes = int(elapsed_time / 60)
             
+            # Cập nhật progress bar theo thời gian
+            if use_time_limit:
+                # Cập nhật progress bar mỗi 0.1 giây
+                if current_time - last_update >= 0.1:
+                    pbar.n = min(int(elapsed_time), time_limit)
+                    pbar.refresh()
+                    last_update = current_time
+                
+                # Kiểm tra điều kiện dừng theo thời gian
+                if elapsed_time >= time_limit:
+                    print("\nĐã đạt giới hạn thời gian training")
+                    break
+            else:
+                # Cập nhật theo số steps
+                pbar.n = step
+                pbar.refresh()
+                
+                # Kiểm tra điều kiện dừng theo steps
+                if step >= total_timesteps:
+                    print("\nĐã đạt số steps tối đa")
+                    break
+            
             # Training loop
             action = agent.select_action(obs)
-            next_obs, reward, done, _, _ = env.step(action)
+            next_obs, reward, done, _, info = env.step(action)
+            
+            # Lấy thông tin từ info
+            episode_time = info.get('elapsed_time', 0)
+            current_score = info.get('current_reward', 0)
+            
             current_episode_reward += reward
             
+            # Cập nhật max survival time
+            if episode_time > max_survival_time:
+                max_survival_time = episode_time
+            
+            # Lưu transition và update model
             agent.add_to_memory(obs, action, reward, next_obs, done)
             if len(agent.memory) >= agent.batch_size:
                 loss = agent.update()
@@ -130,21 +163,11 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
             else:
                 obs = next_obs
             
-            # Cập nhật progress bar
-            if use_time_limit:
-                pbar.n = int(elapsed_time)
-                if elapsed_time >= time_limit:
-                    print(f"\nĐã hoàn thành {training_minutes} phút training!")
-                    break
-            else:
-                pbar.n = step
-                if step >= total_timesteps:
-                    print(f"\nĐã hoàn thành {total_timesteps} steps!")
-                    break
-                    
+            # Cập nhật progress bar với thông tin mới
             pbar.set_postfix({
                 'Episodes': episode_count,
-                'Current Reward': f'{current_episode_reward}',
+                'Score': f'{current_score:.1f}',
+                'Time': f'{episode_time:.1f}s',
                 'Loss': f'{episode_losses[-1]:.6f}' if episode_losses else 'N/A'
             })
             
@@ -160,13 +183,16 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
                 
                 tqdm.write("\n------------------------")
                 tqdm.write(f"Đã train được: \n  - {elapsed_minutes} phút \n  - {episode_count} episodes \n  - {step} steps")
-                tqdm.write(f"Mean reward: {mean_reward:.2f}")
-                tqdm.write(f"Mean loss: {mean_loss:.6f}")
+                tqdm.write(f"Thời gian sống tối đa: {max_survival_time:.1f}s")
+                tqdm.write(f"Điểm trung bình: {mean_reward:.1f}")
+                tqdm.write(f"Loss trung bình: {mean_loss:.6f}")
                 tqdm.write(f"Đã lưu model tại: {agent.model_path}")
                 tqdm.write("------------------------\n")
 
-        # Lưu model cuối cùng
+        # Lưu model cuối cùng và return
         agent.save(agent.model_path)
+        print(f"Đã lưu model tại: {agent.model_path}")
+        return agent
 
     except Exception as e:
         print(f"\nLỗi trong quá trình training: {str(e)}")

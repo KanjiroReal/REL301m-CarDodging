@@ -132,14 +132,14 @@ class DQNAgent:
         os.makedirs(self.model_dir, exist_ok=True)
 
     def select_action(self, state: np.ndarray) -> int:
-        """Chọn action dựa trên policy epsilon-greedy"""
-        if random.random() > self.epsilon:
-            with torch.no_grad():
-                state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-                q_values = self.policy_net(state)
-                return q_values.argmax().item()
-        else:
+        """Chọn action theo epsilon-greedy policy"""
+        if random.random() < self.epsilon:
             return random.randrange(self.n_actions)
+            
+        with torch.no_grad():
+            state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            q_values = self.policy_net(state)
+            return q_values.max(1)[1].item()
             
     def update(self) -> float:
         """Cập nhật model theo phương pháp đã chọn"""
@@ -176,6 +176,13 @@ class DQNAgent:
         loss.backward()
         self.optimizer.step()
         
+        # Cập nhật target network và epsilon
+        self.steps += 1
+        if self.steps % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.update_epsilon()
+        
         return loss.item()
         
     def _update_monte_carlo(self) -> float:
@@ -207,6 +214,13 @@ class DQNAgent:
         # Clear episode buffer
         self.episode_buffer = []
         
+        # Cập nhật target network và epsilon
+        self.steps += 1
+        if self.steps % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.update_epsilon()
+        
         return loss.item()
         
     def _update_td(self) -> float:
@@ -235,6 +249,13 @@ class DQNAgent:
         loss.backward()
         self.optimizer.step()
         
+        # Cập nhật target network và epsilon
+        self.steps += 1
+        if self.steps % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.update_epsilon()
+        
         return loss.item()
 
     def add_to_memory(self, state, action, reward, next_state, done):
@@ -262,3 +283,11 @@ class DQNAgent:
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.epsilon = checkpoint['epsilon']
         self.steps = checkpoint['steps']
+
+    def update_epsilon(self):
+        """Cập nhật epsilon theo decay schedule"""
+        self.epsilon = max(
+            self.epsilon_final,
+            self.epsilon_start * np.exp(-self.steps * self.epsilon_decay)
+        )
+        

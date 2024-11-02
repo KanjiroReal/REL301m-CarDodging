@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pygame
 import json
+import traceback
 from env import CarDodgingEnv
 from DQNagent import ImagePreprocessingWrapper
 from models import DQNAgent
@@ -55,66 +56,59 @@ def load_agent(config_path: str):
         
     except Exception as e:
         print(f"Lỗi khi tải agent: {str(e)}")
+        print("".join(traceback.format_exception(type(e), e, e.__traceback__)))
         return None, None
 
-def play_episode(agent: DQNAgent, env: CarDodgingEnv, render: bool = True) -> float:
+def play_episode(agent: DQNAgent, env: CarDodgingEnv, render: bool = True) -> tuple:
     """
     Chơi một episode
     
-    Args:
-        agent: Agent đã được huấn luyện
-        env: Môi trường
-        render: Có render môi trường hay không
-        
     Returns:
-        float: Tổng reward của episode
+        tuple: (total_reward, survival_time)
     """
     obs, _ = env.reset()
     done = False
     total_reward = 0
+    survival_time = 0
     
     while not done:
         # Xử lý sự kiện Pygame
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return total_reward
+                return total_reward, survival_time
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
-                    return total_reward
+                    return total_reward, survival_time
         
         # Chọn và thực hiện action
         action = agent.select_action(obs)
-        obs, reward, done, _, _ = env.step(action)
+        obs, reward, done, _, info = env.step(action)
         total_reward += reward
+        
+        # Lấy thời gian sống từ info
+        survival_time = info.get('elapsed_time', 0)
         
         if render:
             env.render()
             
-    return total_reward
+    return total_reward, survival_time
 
 def evaluate_agent(agent: DQNAgent, env: CarDodgingEnv, n_episodes: int = 5) -> tuple:
-    """
-    Đánh giá agent qua nhiều episode
-    
-    Args:
-        agent: Agent cần đánh giá
-        env: Môi trường
-        n_episodes: Số episode cần đánh giá
-        
-    Returns:
-        tuple: (mean_reward, std_reward)
-    """
     rewards = []
+    survival_times = []
     
     for i in range(n_episodes):
-        episode_reward = play_episode(agent, env)
-        rewards.append(episode_reward)
-        print(f"Episode {i+1}/{n_episodes}: Reward = {episode_reward:.2f}")
+        reward, time = play_episode(agent, env)
+        rewards.append(reward)
+        survival_times.append(time)
+        print(f"Episode {i+1}/{n_episodes}: Score = {reward:.1f}, Time = {time:.1f}s")
         
     mean_reward = np.mean(rewards)
     std_reward = np.std(rewards)
+    mean_time = np.mean(survival_times)
+    std_time = np.std(survival_times)
     
-    return mean_reward, std_reward
+    return mean_reward, std_reward, mean_time, std_time
 
 def main():
     config_path = "config.json"
@@ -137,12 +131,14 @@ def main():
             
             # Đánh giá agent
             print(f"\nBắt đầu đánh giá agent ({n_episodes} episodes)...")
-            mean_reward, std_reward = evaluate_agent(agent, env, n_episodes=n_episodes)
+            mean_reward, std_reward, mean_time, std_time = evaluate_agent(agent, env, n_episodes=n_episodes)
             print(f"\nKết quả đánh giá:")
-            print(f"Trung bình reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+            print(f"Điểm trung bình: {mean_reward:.1f} ± {std_reward:.1f}")
+            print(f"Thời gian sống: {mean_time:.1f}s ± {std_time:.1f}s")
             
         except Exception as e:
             print(f"Lỗi khi chạy agent: {str(e)}")
+            print("".join(traceback.format_exception(type(e), e, e.__traceback__)))
         finally:
             env.close()
 
