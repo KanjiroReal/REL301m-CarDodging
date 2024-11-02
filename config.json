@@ -7,9 +7,19 @@
         "obstacle_speed": 480,
         "render_fps": 120,
         "reward_config": {
-            "reward_interval": 1.0,
-            "points_per_second": 1,
-            "collision_penalty": -10
+            "reward_interval": 0.1,
+            "survival_reward": {
+                "base_points": 1,
+                "time_multiplier": 0.1
+            },
+            "dodge_reward": {
+                "distance_threshold": 200,
+                "bonus_points": 10,
+                "distance_scaling": true,
+                "min_distance_multiplier": 1,
+                "max_distance_multiplier": 2
+            },
+            "collision_penalty": -100
         },
         "window_size": {
             "game_width": 500,
@@ -27,14 +37,14 @@
         }
     },
     "agent_config": {
-        "learning_rate": 5e-4,
-        "buffer_size": 50000,
-        "batch_size": 64,
-        "gamma": 0.9,
-        "target_update_interval": 500,
+        "learning_rate": 5e-5,
+        "buffer_size": 200000,
+        "batch_size": 128,
+        "gamma": 0.99,
+        "target_update_interval": 2000,
         "exploration_initial_eps": 1.0,
-        "exploration_final_eps": 0.02,
-        "exploration_decay": 0.05,
+        "exploration_final_eps": 0.1,
+        "exploration_decay": 0.003,
         "device": "auto",
         "input_shape": [3, 84, 84],
         "n_actions": 3,
@@ -44,16 +54,15 @@
                 {"filters": 64, "kernel_size": 4, "stride": 2},
                 {"filters": 64, "kernel_size": 3, "stride": 1}
             ],
-            "fc_layers": [256, 128, 64]
+            "fc_layers": [512, 256]
         }
     },
     "training_config": {
         "total_timesteps": 10000,
-        "training_minutes": 100,
+        "training_minutes": 60,
         "use_time_limit": true,
         "learning_method": "dqn",
-        "render_training": true,
-        "save_freq": 1024
+        "render_training": true
     },
     "play_config": {
         "learning_method": "dqn",

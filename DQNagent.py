@@ -35,7 +35,7 @@ class ImagePreprocessingWrapper(gym.ObservationWrapper):
         return obs
 
 
-def setup_env(config=None) -> gym.Env:
+def setup_env(config) -> gym.Env:
     """Khởi tạo và thiết lập môi trường với preprocessing
     
     Args:

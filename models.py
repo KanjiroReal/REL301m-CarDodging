@@ -29,11 +29,14 @@ class DQNNetwork(nn.Module):
                 nn.Conv2d(current_channels, 
                          layer_config['filters'], 
                          kernel_size=layer_config['kernel_size'], 
-                         stride=layer_config['stride']),
-                nn.ReLU()
+                         stride=layer_config['stride'],
+                         padding=layer_config['kernel_size']//2),
+                nn.ReLU(),
+                nn.Dropout2d(0.2)
             ])
             current_channels = layer_config['filters']
             
+        cnn_layers.append(nn.AdaptiveAvgPool2d((4, 4)))
         cnn_layers.append(nn.Flatten())
         self.features = nn.Sequential(*cnn_layers)
         
@@ -49,7 +52,8 @@ class DQNNetwork(nn.Module):
         for size in network_config['fc_layers']:
             fc_layers.extend([
                 nn.Linear(current_size, size),
-                nn.ReLU()
+                nn.ReLU(),
+                nn.Dropout(0.3)
             ])
             current_size = size
             
@@ -174,6 +178,9 @@ class DQNAgent:
         
         self.optimizer.zero_grad()
         loss.backward()
+        
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
+        
         self.optimizer.step()
         
         # Cập nhật target network và epsilon
@@ -203,15 +210,15 @@ class DQNAgent:
         actions = torch.LongTensor(actions).to(self.device)
         returns = torch.FloatTensor(returns).to(self.device)
         
-        # Cập nhật Q values trực tiếp với returns
         current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
         loss = F.mse_loss(current_q_values, returns.unsqueeze(1))
         
         self.optimizer.zero_grad()
         loss.backward()
+        # Thêm gradient clipping
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         
-        # Clear episode buffer
         self.episode_buffer = []
         
         # Cập nhật target network và epsilon
@@ -247,6 +254,8 @@ class DQNAgent:
         
         self.optimizer.zero_grad()
         loss.backward()
+        # Thêm gradient clipping
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         
         # Cập nhật target network và epsilon

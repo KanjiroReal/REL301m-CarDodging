@@ -2,7 +2,7 @@ import gymnasium as gym
 import pygame
 import numpy as np
 import time
-
+import json
 from gymnasium import spaces
 
 class CarDodgingEnv(gym.Env):
@@ -17,40 +17,13 @@ class CarDodgingEnv(gym.Env):
     
     metadata = {"render_modes": ["human"], "render_fps": None}
 
-    def __init__(self, config=None):
+    def __init__(self, config):
         """Khởi tạo môi trường với config tùy chọn
         
         Args:
             config (dict, optional): Cấu hình cho môi trường. Default: None
         """
         super().__init__()
-        
-        # Load config hoặc sử dụng giá trị mặc định
-        if config is None:
-            config = {
-                "num_lanes": 5,
-                "agent_limit_tick": 0.3,
-                "penalty": -50,
-                "reward": 1,
-                "spawn_interval": 0.5,
-                "max_steps": 10000,
-                "obstacle_speed": 480,
-                "render_fps": 120,
-                "window_size": {
-                    "game_width": 500,
-                    "game_height": 800,
-                    "info_panel_height": 50,
-                    "side_panel_width": 200
-                },
-                "car_size": {
-                    "width": 40,
-                    "height": 60
-                },
-                "colors": {
-                    "road": [64, 64, 64],
-                    "line": [255, 255, 0]
-                }
-            }
         
         # Khởi tạo các thông số từ config
         self.num_lanes = config["num_lanes"]
@@ -86,7 +59,6 @@ class CarDodgingEnv(gym.Env):
         self.line_color = tuple(config["colors"]["line"])
         
         self.action_space = spaces.Discrete(3)
-        # Điều chỉnh observation space để phù hợp với kích thước mới
         self.observation_space = spaces.Box(low=0, high=255, shape=(self.window_size[1], self.window_size[0], 3), dtype=np.uint8)
         
         pygame.init()
@@ -119,21 +91,31 @@ class CarDodgingEnv(gym.Env):
         # Dictionary để lưu trữ obstacle image được chọn cho mỗi obstacle
         self.obstacle_images = {}
         
-        # Load reward config
-        reward_config = config.get("reward_config", {
-            "reward_interval": 1.0,
-            "points_per_second": 1,
-            "collision_penalty": -10
+        # Load reward config và reward_interval
+        self.reward_config = config.get("reward_config", {
+            "reward_interval": 0.1,  # Default value
+            "survival_reward": {
+                "base_points": 1,
+                "time_multiplier": 0.1
+            },
+            "dodge_reward": {
+                "distance_threshold": 100,
+                "bonus_points": 10,
+                "distance_scaling": True,
+                "min_distance_multiplier": 0.5,
+                "max_distance_multiplier": 2.0
+            },
+            "collision_penalty": -50
         })
         
-        self.reward_interval = reward_config["reward_interval"]
-        self.points_per_second = reward_config["points_per_second"]
-        self.collision_penalty = reward_config["collision_penalty"]
+        # Lấy reward_interval từ config
+        self.reward_interval = self.reward_config.get("reward_interval", 0.1)
+        self.collision_penalty = self.reward_config["collision_penalty"]
         
         # Thêm biến theo dõi thời gian
         self.start_time = None
         self.elapsed_time = 0
-        self.last_reward_time = 0
+        self.last_reward_time = None
         self.current_reward = 0
         self.max_reward = 0
         
@@ -207,103 +189,95 @@ class CarDodgingEnv(gym.Env):
         current_time = time.time()
         elapsed = current_time - self.last_update_time
         
-        # Cập nhật thời gian trôi qua
+        # Cập nhật thời gian
         self.elapsed_time = current_time - self.start_time
-        
-        # Tính số giây đã trôi qua kể từ lần reward cuối
-        time_since_last_reward = current_time - self.last_reward_time
-        
-        # Tính số reward cần cộng thêm
-        reward_points = int(time_since_last_reward / self.reward_interval) * self.points_per_second
-        
-        if reward_points > 0:
-            # Cập nhật thời điểm reward cuối
-            self.last_reward_time = current_time - (time_since_last_reward % self.reward_interval)
-        
-        # Update game logic với timestep cố định
         self.last_update_time = current_time
-        
-        # Cập nhật vị trí obstacle dựa trên thời gian thực
+
+        # Cập nhật vị trí obstacles
         for i, obstacle in enumerate(self.obstacles):
             if obstacle is not None:
                 obstacle[1] += self.obstacle_speed * elapsed
                 if obstacle[1] > self.game_window_size[1]:
                     self.obstacles[i] = None
         
-        # Spawn obstacle dựa trên thời gian thực
+        # Spawn obstacle mới
         if current_time - self.last_spawn_time >= self.spawn_interval:
             self._spawn_new_obstacle()
             self.last_spawn_time = current_time
         
+        # Xử lý action của agent
         if current_time - self.last_action_time >= self.agent_limit_tick:
             if action == 0 and self.player_lane > 0:
                 self.player_lane -= 1
-                self.last_action_time = current_time
-
-            elif action == 1:
-                self.last_action_time = current_time
-
             elif action == 2 and self.player_lane < self.num_lanes - 1:
                 self.player_lane += 1
-                self.last_action_time = current_time
+            self.last_action_time = current_time
 
         self.player_pos[0] = self.lane_width * self.player_lane + (self.lane_width - self.car_size[0]) // 2
         
-        # check collision
-        done = False
-        for obstacle in self.obstacles:
-            if obstacle is not None:
-                # Kiểm tra va chạm theo hình chữ nhật
-                player_left = self.player_pos[0]
-                player_right = self.player_pos[0] + self.car_size[0]
-                player_top = self.player_pos[1]
-                player_bottom = self.player_pos[1] + self.car_size[1]
+        # Kiểm tra va chạm
+        done = self._check_collision() or self.steps >= self.max_steps
+        
+        # Chỉ tính reward sau mỗi reward_interval
+        if self.last_reward_time is None:
+            self.last_reward_time = current_time
+            step_reward = 0
+        elif current_time - self.last_reward_time >= self.reward_interval:
+            if done:
+                step_reward = self.collision_penalty
+            else:
+                # Survival reward
+                survival_config = self.reward_config["survival_reward"]
+                survival_reward = survival_config["base_points"] * (1 + self.elapsed_time * survival_config["time_multiplier"])
                 
-                obstacle_left = obstacle[0]
-                obstacle_right = obstacle[0] + self.car_size[0]
-                obstacle_top = obstacle[1]
-                obstacle_bottom = obstacle[1] + self.car_size[1]
-                
-                if (player_left < obstacle_right and
-                    player_right > obstacle_left and
-                    player_top < obstacle_bottom and
-                    player_bottom > obstacle_top):
-                    done = True
-                    break
-        
-        if done:
-            # print("\nKết thúc epdisode do va chạm!")
-            self.render()  # Render lại để hiển thị trạng thái va chạm
-            pygame.time.wait(1000)  # Tạm dừng 1 giây
-        
-        if self.steps >= self.max_steps:
-            done = True
-            # print(f"\nKết thúc epdisode do đã hết {self.max_steps} step!")
-        
-        if done:
-            step_reward = self.collision_penalty
+                # Dodge reward
+                dodge_reward = self._calculate_dodge_reward()
+                    
+                step_reward = survival_reward + dodge_reward
+            
+            self.last_reward_time = current_time
         else:
-            # Tính reward dựa trên thời gian sống sót
-            step_reward = reward_points
-        
-        # Cập nhật current_reward và max_reward
+            step_reward = 0
+            
+        # Cập nhật reward tổng
         self.current_reward += step_reward
         self.max_reward = max(self.max_reward, self.current_reward)
         
-        if self.steps >= self.max_steps:
-            done = True
+        return self._get_obs(), step_reward, done, False, self._get_state_info()
+
+    def _check_collision(self):
+        """Kiểm tra va chạm giữa agent và obstacles"""
+        for obstacle in self.obstacles:
+            if obstacle is not None:
+                player_rect = pygame.Rect(self.player_pos[0], self.player_pos[1], 
+                                        self.car_size[0], self.car_size[1])
+                obstacle_rect = pygame.Rect(obstacle[0], obstacle[1], 
+                                          self.car_size[0], self.car_size[1])
+                if player_rect.colliderect(obstacle_rect):
+                    return True
+        return False
+
+    def _calculate_dodge_reward(self):
+        """Tính toán dodge reward"""
+        dodge_config = self.reward_config["dodge_reward"]
+        min_distance = float('inf')
         
-        observation = self._get_obs()
-        info = self._get_state_info()
+        for obs in self.obstacles:
+            if obs is not None:
+                distance = abs(obs[1] - self.player_pos[1])
+                min_distance = min(min_distance, distance)
         
-        # Thêm thông tin thời gian và điểm vào info
-        info.update({
-            'elapsed_time': self.elapsed_time,
-            'current_reward': self.current_reward,
-            'points_per_second': self.points_per_second
-        })
-        
-        return observation, step_reward, done, False, info
+        if min_distance >= dodge_config["distance_threshold"]:
+            return 0
+            
+        if dodge_config["distance_scaling"]:
+            distance_factor = 1 - (min_distance / dodge_config["distance_threshold"])
+            multiplier = (dodge_config["min_distance_multiplier"] + 
+                        (dodge_config["max_distance_multiplier"] - 
+                         dodge_config["min_distance_multiplier"]) * distance_factor)
+            return dodge_config["bonus_points"] * multiplier
+            
+        return dodge_config["bonus_points"]
 
     def _get_state_info(self):
         """Lấy thông tin về trạng thái hiện tại của môi trường
@@ -347,7 +321,7 @@ class CarDodgingEnv(gym.Env):
             top_panel = pygame.Surface((self.game_window_size[0], self.info_panel_height))
             top_panel.fill((240, 240, 240))
             
-            # Vẽ trng thái làn đường trên panel trên
+            # Vẽ trạng thái làn đường trên panel trên
             for i in range(self.num_lanes):
                 has_obstacle = self.obstacles[i] is not None
                 color = (255, 0, 0) if has_obstacle else (0, 150, 0)
@@ -366,19 +340,63 @@ class CarDodgingEnv(gym.Env):
             side_panel = pygame.Surface((self.side_panel_width, self.window_size[1]))
             side_panel.fill((240, 240, 240))
             
-            # Hiển thị thời gian
+            # Vẽ tiêu đề
+            title = self.font.render("REWARD INFO", True, (0, 0, 0))
+            side_panel.blit(title, (10, 20))
+            
+            # Hiển thị thời gian và điểm
             time_text = self.font.render(f"Time: {self.elapsed_time:.1f}s", True, (0, 0, 0))
+            current_reward_text = self.font.render(f"Score: {self.current_reward:.1f}", True, (0, 100, 0))
+            max_reward_text = self.font.render(f"Best: {self.max_reward:.1f}", True, (0, 0, 100))
             
-            # Hiển thị điểm
-            current_reward_text = self.font.render(f"Score: {self.current_reward}", True, (0, 100, 0))
-            max_reward_text = self.font.render(f"Best: {self.max_reward}", True, (0, 0, 100))
+            y_pos = 50
+            side_panel.blit(time_text, (10, y_pos))
+            side_panel.blit(current_reward_text, (10, y_pos + 30))
+            side_panel.blit(max_reward_text, (10, y_pos + 60))
             
-            side_panel.blit(time_text, (10, 20))
-            side_panel.blit(current_reward_text, (10, 50))
-            side_panel.blit(max_reward_text, (10, 80))
+            # Vẽ đường phân cách
+            pygame.draw.line(side_panel, (150, 150, 150), 
+                           (10, y_pos + 100), 
+                           (self.side_panel_width - 10, y_pos + 100), 2)
             
-            side_panel.blit(self.font.render(f"Survive in {self.reward_interval:.0f}s: +{self.points_per_second}", True, (0, 200, 0)), (10, 110))
-            side_panel.blit(self.font.render(f"Collision: {self.collision_penalty}", True, (255, 0, 0)), (10, 140))
+            # Hiển thị chi tiết reward
+            y_pos += 120
+            
+            # Survival reward
+            survival_title = self.font.render("Survival Rewards:", True, (0, 100, 0))
+            side_panel.blit(survival_title, (10, y_pos))
+            
+            base_points = self.reward_config["survival_reward"]["base_points"]
+            time_mult = self.reward_config["survival_reward"]["time_multiplier"]
+            survival_text = self.font.render(f"Base: +{base_points}/s", True, (0, 100, 0))
+            time_bonus_text = self.font.render(f"Time bonus: +{time_mult:.1f}/s", True, (0, 100, 0))
+            
+            side_panel.blit(survival_text, (20, y_pos + 25))
+            side_panel.blit(time_bonus_text, (20, y_pos + 50))
+            
+            # Dodge reward
+            y_pos += 90
+            dodge_title = self.font.render("Dodge Rewards:", True, (0, 100, 0))
+            side_panel.blit(dodge_title, (10, y_pos))
+            
+            dodge_config = self.reward_config["dodge_reward"]
+            threshold_text = self.font.render(f"Range: {dodge_config['distance_threshold']}px", True, (0, 100, 0))
+            bonus_text = self.font.render(f"Bonus: +{dodge_config['bonus_points']}", True, (0, 100, 0))
+            
+            if dodge_config["distance_scaling"]:
+                scaling_text = self.font.render(f"Multiplier: x{dodge_config['min_distance_multiplier']}~x{dodge_config['max_distance_multiplier']}", True, (0, 100, 0))
+                side_panel.blit(scaling_text, (20, y_pos + 75))
+            
+            side_panel.blit(threshold_text, (20, y_pos + 25))
+            side_panel.blit(bonus_text, (20, y_pos + 50))
+            
+            # Penalty
+            y_pos += 115
+            penalty_title = self.font.render("Penalties:", True, (255, 0, 0))
+            side_panel.blit(penalty_title, (10, y_pos))
+            
+            collision_text = self.font.render(f"Collision: {self.collision_penalty}", True, (255, 0, 0))
+            side_panel.blit(collision_text, (20, y_pos + 25))
             
             # Vẽ đường phân cách bên trái panel phải
             pygame.draw.line(self.screen, (150, 150, 150),
@@ -469,7 +487,10 @@ def main(log: bool = False) -> None:
     Returns:
         None
     """
-    env = CarDodgingEnv()
+    config_path = "config.json"
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    env = CarDodgingEnv(config=config["env_config"])
     num_episodes = 100
 
     for episode in range(num_episodes):
