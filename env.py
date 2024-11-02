@@ -5,42 +5,90 @@ import time
 
 from gymnasium import spaces
 
-# Hằng số
-NUM_LANES = 5
-AGENT_LIMIT_TICK = 0.3
-PENALTY = -50
-REWARD = 1
-SPAWN_INTERVAL = 1
-MAX_STEPS_PER_EPISODE = 10000
-OBSTACLE_SPEED = 8
-
 class CarDodgingEnv(gym.Env):
     """Môi trường huấn luyện agent tránh các obstacle trên đường đua nhiều làn
     
     Args:
-        Không có tham số đầu vào
+        config (dict, optional): Cấu hình cho môi trường. Default: None
         
     Returns:
         CarDodgingEnv: Một instance của môi trường
     """
     
-    metadata = {"render_modes": ["human"], "render_fps": 60}
+    metadata = {"render_modes": ["human"], "render_fps": None}
 
-    def __init__(self):
-        """Khởi tạo môi trường với các thông số cơ bản
+    def __init__(self, config=None):
+        """Khởi tạo môi trường với config tùy chọn
         
         Args:
-            Không có tham số đầu vào
-            
-        Returns:
-            None
+            config (dict, optional): Cấu hình cho môi trường. Default: None
         """
         super().__init__()
-        self.window_size = (100 * NUM_LANES, 800)
-        self.car_size = (40, 60)
-        self.lane_width = self.window_size[0] // NUM_LANES
         
-        self.action_space = spaces.Discrete(3)  # 0: left, 1: stay, 2: right
+        # Load config hoặc sử dụng giá trị mặc định
+        if config is None:
+            config = {
+                "num_lanes": 5,
+                "agent_limit_tick": 0.3,
+                "penalty": -50,
+                "reward": 1,
+                "spawn_interval": 0.5,
+                "max_steps": 10000,
+                "obstacle_speed": 480,
+                "render_fps": 120,
+                "window_size": {
+                    "game_width": 500,
+                    "game_height": 800,
+                    "info_panel_height": 50,
+                    "side_panel_width": 200
+                },
+                "car_size": {
+                    "width": 40,
+                    "height": 60
+                },
+                "colors": {
+                    "road": [64, 64, 64],
+                    "line": [255, 255, 0]
+                }
+            }
+        
+        # Khởi tạo các thông số từ config
+        self.num_lanes = config["num_lanes"]
+        self.agent_limit_tick = config["agent_limit_tick"]
+        self.penalty = config["penalty"]
+        self.reward = config["reward"]
+        self.spawn_interval = config["spawn_interval"]
+        self.max_steps = config["max_steps"]
+        self.obstacle_speed = config["obstacle_speed"]
+        
+        self.metadata = {"render_modes": ["human"], "render_fps": config["render_fps"]}
+        
+        # Kích thước cửa sổ và panel
+        self.info_panel_height = config["window_size"]["info_panel_height"]
+        self.side_panel_width = config["window_size"]["side_panel_width"]
+        self.game_window_size = (
+            config["window_size"]["game_width"],
+            config["window_size"]["game_height"]
+        )
+        
+        self.window_size = (
+            self.game_window_size[0] + self.side_panel_width,
+            self.game_window_size[1] + self.info_panel_height
+        )
+        
+        self.car_size = (
+            config["car_size"]["width"],
+            config["car_size"]["height"]
+        )
+        
+        self.lane_width = self.game_window_size[0] // self.num_lanes
+        
+        # Màu sắc
+        self.road_color = tuple(config["colors"]["road"])
+        self.line_color = tuple(config["colors"]["line"])
+        
+        self.action_space = spaces.Discrete(3)
+        # Điều chỉnh observation space để phù hợp với kích thước mới
         self.observation_space = spaces.Box(low=0, high=255, shape=(self.window_size[1], self.window_size[0], 3), dtype=np.uint8)
         
         pygame.init()
@@ -50,10 +98,28 @@ class CarDodgingEnv(gym.Env):
         self.font = pygame.font.Font(None, 24)
         
         self.player_lane = None
-        self.obstacles = [None] * NUM_LANES
+        self.obstacles = [None] * self.num_lanes
         self.last_action_time = 0
         self.last_spawn_time = 0
         self.steps = 0
+        self.last_update_time = time.time()
+        self.fixed_timestep = 1.0 / 60  # 60Hz game logic
+        self.max_reward = 0  # Thêm biến theo dõi max reward
+        self.current_reward = 0  # Thêm biến theo dõi reward hiện tại
+        
+        # Load images
+        self.agent_img = pygame.image.load('images/agents/agent.png')
+        self.agent_img = pygame.transform.scale(self.agent_img, self.car_size)
+        
+        # Load obstacle images
+        self.obstacle_imgs = []
+        for i in range(1, 13):  # Load car1.png to car12.png
+            img = pygame.image.load(f'images/obstacles/car{i}.png')
+            img = pygame.transform.scale(img, self.car_size)
+            self.obstacle_imgs.append(img)
+            
+        # Dictionary để lưu trữ obstacle image được chọn cho mỗi obstacle
+        self.obstacle_images = {}
 
     def reset(self, seed=None, options=None):
         """Khởi tạo lại trạng thái môi trường về ban đầu
@@ -69,13 +135,16 @@ class CarDodgingEnv(gym.Env):
         """
         super().reset(seed=seed)
         
-        self.player_lane = NUM_LANES // 2
+        self.player_lane = self.num_lanes // 2
         self.player_pos = [self.lane_width * self.player_lane + (self.lane_width - self.car_size[0]) // 2, 
-                           self.window_size[1] - self.car_size[1] - 10]
-        self.obstacles = [None] * NUM_LANES
+                           self.game_window_size[1] - self.car_size[1] - 10]
+        self.obstacles = [None] * self.num_lanes
         self.last_action_time = time.time()
         self.last_spawn_time = time.time()
         self.steps = 0
+        self.current_reward = 0  # Reset reward hiện tại
+        
+        self.obstacle_images = {}  # Reset obstacle images dictionary
         
         observation = self._get_obs()
         info = {}
@@ -95,6 +164,8 @@ class CarDodgingEnv(gym.Env):
         if empty_lanes:
             lane = np.random.choice(empty_lanes)
             self.obstacles[lane] = [self.lane_width * lane + (self.lane_width - self.car_size[0]) // 2, 0]
+            # Chọn ngẫu nhiên một hình ảnh obstacle cho obstacle mới
+            self.obstacle_images[lane] = np.random.choice(self.obstacle_imgs)
 
     def step(self, action):
         """Thực hiện một bước trong môi trường
@@ -112,8 +183,24 @@ class CarDodgingEnv(gym.Env):
         """
         self.steps += 1
         current_time = time.time()
+        elapsed = current_time - self.last_update_time
         
-        if current_time - self.last_action_time >= AGENT_LIMIT_TICK:
+        # Update game logic với timestep cố định
+        self.last_update_time = current_time
+        
+        # Cập nhật vị trí obstacle dựa trên thời gian thực
+        for i, obstacle in enumerate(self.obstacles):
+            if obstacle is not None:
+                obstacle[1] += self.obstacle_speed * elapsed
+                if obstacle[1] > self.game_window_size[1]:
+                    self.obstacles[i] = None
+        
+        # Spawn obstacle dựa trên thời gian thực
+        if current_time - self.last_spawn_time >= self.spawn_interval:
+            self._spawn_new_obstacle()
+            self.last_spawn_time = current_time
+        
+        if current_time - self.last_action_time >= self.agent_limit_tick:
             if action == 0 and self.player_lane > 0:
                 self.player_lane -= 1
                 self.last_action_time = current_time
@@ -121,21 +208,11 @@ class CarDodgingEnv(gym.Env):
             elif action == 1:
                 self.last_action_time = current_time
 
-            elif action == 2 and self.player_lane < NUM_LANES - 1:
+            elif action == 2 and self.player_lane < self.num_lanes - 1:
                 self.player_lane += 1
                 self.last_action_time = current_time
 
         self.player_pos[0] = self.lane_width * self.player_lane + (self.lane_width - self.car_size[0]) // 2
-        
-        if current_time - self.last_spawn_time >= SPAWN_INTERVAL:
-            self._spawn_new_obstacle()
-            self.last_spawn_time = current_time
-        
-        for i, obstacle in enumerate(self.obstacles):
-            if obstacle is not None:
-                obstacle[1] += OBSTACLE_SPEED
-                if obstacle[1] > self.window_size[1]:
-                    self.obstacles[i] = None
         
         # check collision
         done = False
@@ -160,15 +237,18 @@ class CarDodgingEnv(gym.Env):
                     break
         
         if done:
-            print("Kết thúc epdisode do va chạm!")
+            # print("\nKết thúc epdisode do va chạm!")
             self.render()  # Render lại để hiển thị trạng thái va chạm
             pygame.time.wait(1000)  # Tạm dừng 1 giây
         
-        if self.steps >= MAX_STEPS_PER_EPISODE:
+        if self.steps >= self.max_steps:
             done = True
-            print(f"Kết thúc epdisode do đã hết {MAX_STEPS_PER_EPISODE} step!")
+            # print(f"\nKết thúc epdisode do đã hết {self.max_steps} step!")
         
-        reward = REWARD if not done else PENALTY
+        reward = self.reward if not done else self.penalty
+        self.current_reward += reward  # Cập nhật reward hiện tại
+        self.max_reward = max(self.max_reward, self.current_reward)  # Cập nhật max reward
+        
         observation = self._get_obs()
         info = self._get_state_info()
         
@@ -186,7 +266,7 @@ class CarDodgingEnv(gym.Env):
                 - lane_states: Trạng thái có obstacle hay không trên mỗi làn (0/1)
         """
         distances = []
-        for lane in range(NUM_LANES):
+        for lane in range(self.num_lanes):
             if self.obstacles[lane] is not None:
                 distance = self.obstacles[lane][1] - self.player_pos[1]
                 distances.append(abs(distance) if distance < 0 else distance)
@@ -212,29 +292,83 @@ class CarDodgingEnv(gym.Env):
         try:
             self.screen.fill((255, 255, 255))
             
-            # Vẽ làn đường
-            for i in range(1, NUM_LANES):
-                pygame.draw.line(self.screen, (200, 200, 200), 
-                               (i * self.lane_width, 0), 
-                               (i * self.lane_width, self.window_size[1]))
+            # 1. Vẽ panel thông tin phía trên
+            top_panel = pygame.Surface((self.game_window_size[0], self.info_panel_height))
+            top_panel.fill((240, 240, 240))
             
-            # Vẽ agent
-            pygame.draw.rect(self.screen, (0, 0, 255), (*self.player_pos, *self.car_size))
+            # Vẽ trng thái làn đường trên panel trên
+            for i in range(self.num_lanes):
+                has_obstacle = self.obstacles[i] is not None
+                color = (255, 0, 0) if has_obstacle else (0, 150, 0)
+                status = 1 if has_obstacle else 0
+                
+                lane_text = self.font.render(f"Lane {i + 1}: {status}", True, color)
+                text_x = i * self.lane_width + (self.lane_width - lane_text.get_width()) // 2
+                top_panel.blit(lane_text, (text_x, 15))
             
-            # Vẽ obstacles và thông tin khoảng cách
+            # Vẽ đường phân cách dưới panel trên
+            pygame.draw.line(top_panel, (150, 150, 150), 
+                           (0, self.info_panel_height - 1),
+                           (self.game_window_size[0], self.info_panel_height - 1), 2)
+            
+            # 2. Vẽ panel bên phải
+            side_panel = pygame.Surface((self.side_panel_width, self.window_size[1]))
+            side_panel.fill((240, 240, 240))
+            
+            # Vẽ thông tin reward trên panel phải
+            current_reward_text = self.font.render(f"Current: {self.current_reward}", True, (0, 100, 0))
+            max_reward_text = self.font.render(f"Max: {self.max_reward}", True, (0, 0, 100))
+            side_panel.blit(current_reward_text, (10, 20))
+            side_panel.blit(max_reward_text, (10, 50))
+            
+            # Vẽ đường phân cách bên trái panel phải
+            pygame.draw.line(self.screen, (150, 150, 150),
+                           (self.game_window_size[0], 0),
+                           (self.game_window_size[0], self.window_size[1]), 2)
+            
+            # 3. Vẽ phần game
+            game_surface = pygame.Surface(self.game_window_size)
+            
+            # Vẽ nền đường màu xám
+            game_surface.fill(self.road_color)
+            
+            # Vẽ vạch kẻ đường màu vàng nét đứt
+            for i in range(1, self.num_lanes):
+                x = i * self.lane_width
+                # Vẽ các đoạn nét đứt
+                dash_length = 30  # Độ dài mỗi nét
+                gap_length = 20   # Khoảng cách giữa các nét
+                y = 0
+                while y < self.game_window_size[1]:
+                    pygame.draw.line(game_surface, self.line_color,
+                                   (x, y),
+                                   (x, min(y + dash_length, self.game_window_size[1])), 2)
+                    y += dash_length + gap_length
+            
+            # Vẽ agent bằng hình ảnh
+            game_surface.blit(self.agent_img, self.player_pos)
+            
+            # Vẽ obstacles bằng hình ảnh được chọn ngẫu nhiên
             for i, obstacle in enumerate(self.obstacles):
                 if obstacle is not None:
-                    pygame.draw.rect(self.screen, (255, 0, 0), (*obstacle, *self.car_size))
+                    # Lấy hình ảnh đã được chọn cho obstacle này
+                    obstacle_img = self.obstacle_images.get(i)
+                    if obstacle_img is None:
+                        # Nếu chưa có hình ảnh, chọn một hình ngẫu nhiên
+                        obstacle_img = np.random.choice(self.obstacle_imgs)
+                        self.obstacle_images[i] = obstacle_img
                     
+                    game_surface.blit(obstacle_img, obstacle)
+                    
+                    # Vẽ khoảng cách
                     distance = abs(obstacle[1] - self.player_pos[1])
-                    dist_text = self.font.render(f"{int(distance)}", True, (0, 0, 0))
-                    self.screen.blit(dist_text, (obstacle[0] + self.car_size[0]/2 - 15, obstacle[1] + self.car_size[1]))
+                    dist_text = self.font.render(f"{int(distance)}", True, (255, 255, 255))  # Đổi màu text thành trắng
+                    game_surface.blit(dist_text, (obstacle[0] + self.car_size[0] + 5, obstacle[1]))
             
-            # Hiển thị trạng thái làn đường
-            lane_states = self._get_state_info()['lane_states']
-            for i, state in enumerate(lane_states):
-                state_text = self.font.render(f"Lane {i}: {'1' if state == 1 else '0'}", True, (0, 0, 0))
-                self.screen.blit(state_text, (10 + i * self.lane_width, 10))
+            # 4. Vẽ tất cả lên main screen
+            self.screen.blit(top_panel, (0, 0))  # Panel trên
+            self.screen.blit(side_panel, (self.game_window_size[0], 0))  # Panel phải
+            self.screen.blit(game_surface, (0, self.info_panel_height))  # Phần game
             
             pygame.display.flip()
             self.clock.tick(self.metadata["render_fps"])
@@ -277,7 +411,7 @@ def main(log: bool = False) -> None:
         None
     """
     env = CarDodgingEnv()
-    num_episodes = 2
+    num_episodes = 100
 
     for episode in range(num_episodes):
         observation, info = env.reset()

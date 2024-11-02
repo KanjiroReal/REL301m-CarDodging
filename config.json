@@ -1,0 +1,59 @@
+{
+    "env_config": {
+        "num_lanes": 5,
+        "agent_limit_tick": 0.3,
+        "penalty": -50,
+        "reward": 1,
+        "spawn_interval": 0.5,
+        "max_steps": 10000,
+        "obstacle_speed": 480,
+        "render_fps": 120,
+        "window_size": {
+            "game_width": 500,
+            "game_height": 800,
+            "info_panel_height": 50,
+            "side_panel_width": 200
+        },
+        "car_size": {
+            "width": 40,
+            "height": 60
+        },
+        "colors": {
+            "road": [64, 64, 64],
+            "line": [255, 255, 0]
+        }
+    },
+    "agent_config": {
+        "learning_rate": 5e-4,
+        "buffer_size": 50000,
+        "batch_size": 64,
+        "gamma": 0.9,
+        "target_update_interval": 500,
+        "exploration_initial_eps": 1.0,
+        "exploration_final_eps": 0.02,
+        "exploration_decay": 0.2,
+        "device": "auto",
+        "input_shape": [3, 84, 84],
+        "n_actions": 3,
+        "network_architecture": {
+            "cnn_layers": [
+                {"filters": 32, "kernel_size": 8, "stride": 4},
+                {"filters": 64, "kernel_size": 4, "stride": 2},
+                {"filters": 64, "kernel_size": 3, "stride": 1}
+            ],
+            "fc_layers": [128, 64]
+        }
+    },
+    "training_config": {
+        "total_timesteps": 10000,
+        "training_minutes": 60,
+        "use_time_limit": true,
+        "learning_method": "dqn",
+        "render_training": true,
+        "save_freq": 1024
+    },
+    "play_config": {
+        "learning_method": "dqn",
+        "n_evaluation_episodes": 5
+    }
+} 

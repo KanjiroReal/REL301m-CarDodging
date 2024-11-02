@@ -1,8 +1,7 @@
 # REL301m-CarDodging
 ## --- [ENGLISH BELOW](#rel301m-cardodging-1) ---
 
-
-Dự án này triển khai một môi trường game đơn giản "Car Dodging" và huấn luyện các agent AI để chơi game sử dụng thuật toán học tăng cường.
+Dự án này triển khai một môi trường game đơn giản "Car Dodging" và huấn luyện các agent AI để chơi game sử dụng các phương pháp học tăng cường khác nhau (DQN, Monte Carlo, TD Learning).
 
 ## Cài đặt
 
@@ -13,82 +12,101 @@ cd REL301m-CarDodging
 ```
 
 2. Tạo và kích hoạt môi trường ảo:
-
-```
+```bash
 python -m venv venv
 source venv/bin/activate  # Trên Windows: venv\Scripts\activate
 ```
 
 3. Cài đặt các thư viện cần thiết:
-
-```
+```bash
 pip install -r requirements.txt
 ```
 
 ## Cấu trúc dự án
 
 - `env.py`: Định nghĩa môi trường CarDodgingEnv
-- `DQNagent.py`: Triển khai agent sử dụng thuật toán DQN
-- `PPOagent.py`: Triển khai agent sử dụng thuật toán PPO
+- `models.py`: Triển khai các model DQN và các phương pháp học tăng cường
+- `DQNagent.py`: Script huấn luyện agent
 - `play.py`: Script để chạy và đánh giá agent đã huấn luyện
+- `config.json`: File cấu hình cho môi trường và agent
+- `images/`: Thư mục chứa hình ảnh cho game
+  - `agents/`: Hình ảnh xe của agent (agent.png)
+  - `obstacles/`: Hình ảnh các xe vật cản (car1.png đến car12.png)
 
-## Chỉnh sửa môi trường
+## Cấu hình
 
-Để điều chỉnh môi trường, mở file `env.py` và chỉnh sửa các tham số như:
+Tất cả cấu hình được định nghĩa trong file `config.json`, bao gồm:
 
-- `NUM_LANES`: Số làn đường
-- `AGENT_LIMIT_TICK`: Thời gian giới hạn giữa các hành động của agent
-- `PENALTY`: Điểm phạt khi va chạm
-- `REWARD`: Phần thưởng cho mỗi bước di chuyển
-- `SPAWN_INTERVAL`: Khoảng thời gian giữa các lần sinh obstacle
-- `MAX_STEPS_PER_EPISODE`: Số bước tối đa cho mỗi episode
-- `OBSTACLE_SPEED`: Tốc độ di chuyển của obstacle
+### Cấu hình môi trường (env_config)
+- Số làn đường, kích thước cửa sổ
+- Tốc độ game, reward/penalty
+- Kích thước xe, màu sắc đường và vạch kẻ đường
+- Tốc độ vật cản và tần suất xuất hiện
+
+### Cấu hình agent (agent_config)
+- Tham số học tập (learning rate, gamma, ...)
+- Cấu trúc mạng neural (CNN layers, FC layers)
+- Tham số exploration và buffer size
+
+### Cấu hình training (training_config)
+- Số bước training hoặc thời gian training
+- Phương pháp học (DQN/Monte Carlo/TD)
+- Tần suất cập nhật và lưu model
+
+### Cấu hình chơi (play_config)
+- Phương pháp học để load model
+- Số episode đánh giá
 
 ## Huấn luyện agent
 
-### Sử dụng DQN
+1. Điều chỉnh cấu hình trong `config.json`:
+   - Chọn phương pháp học trong `training_config.learning_method`
+   - Điều chỉnh thời gian hoặc số bước training
+   - Tùy chỉnh các tham số khác
 
-1. Mở file `DQNagent.py`
-2. Điều chỉnh các tham số cấu hình trong hàm `create_dqn_agent()`
-3. Chạy script để huấn luyện:
-
-```
+2. Chạy script huấn luyện:
+```bash
 python DQNagent.py
 ```
 
-### Sử dụng PPO
-
-1. Mở file `PPOagent.py`
-2. Điều chỉnh các tham số cấu hình trong hàm `create_ppo_agent()`
-3. Chạy script để huấn luyện:
-
-```
-python PPOagent.py
-```
+Trong quá trình training:
+- Nhấn Q để dừng training và lưu model
+- Nhấn R để bật/tắt render
+- Progress bar hiển thị tiến trình
+- Thống kê được in mỗi phút
+- Model được tự động lưu mỗi phút và khi kết thúc
 
 ## Chạy và đánh giá agent
 
-Để chạy và đánh giá agent đã huấn luyện:
-
-1. Đảm bảo bạn đã huấn luyện và lưu model (thường trong thư mục `models/`)
-2. Mở file `play.py` và điều chỉnh đường dẫn đến model trong biến `model_path`
-3. Chạy script:
-
-```
+1. Chọn phương pháp học trong `play_config.learning_method`
+2. Chạy script đánh giá:
+```bash
 python play.py
 ```
 
-Script này sẽ tải model đã huấn luyện và chạy một số episode để đánh giá hiệu suất của agent.
+Script sẽ:
+- Tự động tải model tương ứng với phương pháp học đã chọn
+- Chạy số episode đánh giá được cấu hình
+- Hiển thị thống kê hiệu suất và thông tin model
 
-## Tùy chỉnh
+## Cấu trúc thư mục models
 
-- Để thay đổi số episode đánh giá, điều chỉnh tham số `num_episodes` trong hàm `play_episodes()` của file `play.py`
-- Để điều chỉnh cách hiển thị kết quả, chỉnh sửa hàm `main()` trong `play.py`
+```
+models/
+  ├── dqn_car_dodging/
+  │   └── final_model.zip
+  ├── monte_carlo_car_dodging/
+  │   └── final_model.zip
+  └── td_car_dodging/
+      └── final_model.zip
+```
 
 ## Lưu ý
 
-- Đảm bảo rằng bạn đã cài đặt đầy đủ các thư viện cần thiết trước khi chạy các script
-- Nếu gặp vấn đề với việc render môi trường, hãy kiểm tra cài đặt Pygame của bạn
+- Đảm bảo các thư mục `models/` tồn tại trước khi training
+- Model được lưu tự động theo phương pháp học
+- Có thể tiếp tục training từ model đã lưu
+- Cần có GPU để training hiệu quả (tự động phát hiện qua config)
 
 ---
 
@@ -120,64 +138,67 @@ pip install -r requirements.txt
 ## Project Structure
 
 - `env.py`: Defines the CarDodgingEnv environment
-- `DQNagent.py`: Implements the agent using the DQN algorithm
-- `PPOagent.py`: Implements the agent using the PPO algorithm
+- `models.py`: Implements the DQN and reinforcement learning algorithms
+- `DQNagent.py`: Script to train the agent
 - `play.py`: Script to run and evaluate the trained agent
+- `config.json`: Configuration file for the environment and agent
+- `images/`: Directory containing images for the game
+  - `agents/`: Images of the agent's car
+  - `obstacles/`: Images of the obstacles
 
-## Modifying the Environment
+## Configuration
 
-To adjust the environment, open the `env.py` file and modify parameters such as:
+All configuration is defined in the `config.json` file, which includes:
 
-- `NUM_LANES`: Number of lanes
-- `AGENT_LIMIT_TICK`: Time limit between agent actions
-- `PENALTY`: Penalty points for collisions
-- `REWARD`: Reward for each movement step
-- `SPAWN_INTERVAL`: Time interval between obstacle spawns
-- `MAX_STEPS_PER_EPISODE`: Maximum number of steps per episode
-- `OBSTACLE_SPEED`: Speed of obstacle movement
+### Environment Configuration (env_config)
+- Number of lanes and window size
+- Game speed and reward/penalty
+- Car size and lane color
+
+### Agent Configuration (agent_config)
+- Learning rate, gamma, etc.
+- Network architecture (CNN layers, FC layers)
+- Exploration parameters
+
+### Training Configuration (training_config)
+- Number of training steps
+- Learning method (DQN/Monte Carlo/TD)
+- Other training parameters
 
 ## Training the Agent
 
-### Using DQN
-
-1. Open the `DQNagent.py` file
-2. Adjust the configuration parameters in the `create_dqn_agent()` function
-3. Run the script to train:
-
-```
+1. Adjust the configuration in the `config.json` file as needed
+2. Run the training script:
+```bash
 python DQNagent.py
 ```
 
-### Using PPO
-
-1. Open the `PPOagent.py` file
-2. Adjust the configuration parameters in the `create_ppo_agent()` function
-3. Run the script to train:
-
-```
-python PPOagent.py
-```
+During training:
+- Press Q to stop training and save the model
+- Progress bar shows training progress
+- Statistics are printed every minute
 
 ## Running and Evaluating the Agent
 
-To run and evaluate the trained agent:
-
-1. Ensure you have trained and saved the model (usually in the `models/` directory)
-2. Open the `play.py` file and adjust the path to the model in the `model_path` variable
-3. Run the script:
-
-```
+1. Ensure you have trained and saved the model (usually in the `models/dqn_car_dodging/`)
+2. Run the evaluation script:
+```bash
 python play.py
 ```
 
-This script will load the trained model and run a number of episodes to evaluate the agent's performance.
+This script will:
+- Load the trained model
+- Run 5 evaluation episodes
+- Display performance statistics
 
 ## Customization
 
-- To change the number of evaluation episodes, adjust the `num_episodes` parameter in the `play_episodes()` function of the `play.py` file
-- To adjust how results are displayed, edit the `main()` function in `play.py`
+- Change the network architecture: Edit the `network_architecture` in the config
+- Change the learning method: Adjust the `learning_method` in the config
+- Adjust the environment: Modify the parameters in the `env_config`
 
 ## Notes
 
-- Make sure you have installed all the necessary libraries before running the scripts
-- If you encounter issues with rendering the environment, check your Pygame installation
+- Ensure the `models/` and `logs/` directories exist before training
+- Verify the paths in the config are correct for the directory structure
+- A GPU is recommended for efficient training (automatically detected via config)
