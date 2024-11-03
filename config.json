@@ -1,7 +1,7 @@
 {
     "env_config": {
         "num_lanes": 5,
-        "agent_limit_tick": 0.1,
+        "agent_limit_tick": 0.33,
         "spawn_interval": 0.5,
         "max_steps": 10000,
         "obstacle_speed": 480,
@@ -9,23 +9,24 @@
         "reward_config": {
             "reward_interval": 0.1,
             "survival_reward": {
-                "base_points": 1,
-                "time_multiplier": 0.1
+                "base_points": 0.1,
+                "time_multiplier": 0
             },
             "dodge_reward": {
                 "distance_threshold": 200,
-                "bonus_points": 10,
+                "bonus_points": 5,
                 "distance_scaling": true,
                 "min_distance_multiplier": 1,
                 "max_distance_multiplier": 2
             },
-            "collision_penalty": -100
+            "collision_penalty": 0,
+            "movement_penalty": -0.2
         },
         "window_size": {
             "game_width": 500,
             "game_height": 600,
             "info_panel_height": 50,
-            "side_panel_width": 200
+            "side_panel_width": 300
         },
         "car_size": {
             "width": 40,
@@ -37,25 +38,25 @@
         }
     },
     "agent_config": {
-        "learning_rate": 5e-4,
-        "buffer_size": 100000,
-        "batch_size": 64,
+        "learning_rate": 1e-4,
+        "buffer_size": 50000,
+        "batch_size": 32,
         "gamma": 0.99,
-        "target_update_interval": 500,
+        "target_update_interval": 1000,
         "exploration_initial_eps": 1.0,
         "exploration_final_eps": 0.05,
-        "exploration_decay": 0.000001,
+        "exploration_decay": 0.00005,
         "device": "auto",
         "num_lanes": 5,
         "n_actions": 3,
         "network_architecture": {
-            "fc_layers": [512, 256, 128, 64]
+            "fc_layers": [128, 64, 32]
         }
     },
     "training_config": {
-        "total_timesteps": 10000,
+        "total_timesteps": 100000000,
         "training_minutes": 30,
-        "use_time_limit": true,
+        "use_time_limit": false,
         "learning_method": "dqn",
         "render_training": true
     },

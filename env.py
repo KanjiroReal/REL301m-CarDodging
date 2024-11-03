@@ -107,6 +107,22 @@ class CarDodgingEnv(gym.Env):
                     shape=(1,),
                     dtype=np.float32
                 )
+            }),
+            
+            # Thêm không gian cho thông tin di chuyển
+            'movement_info': spaces.Dict({
+                'last_direction': spaces.Box(
+                    low=0,
+                    high=2,
+                    shape=(1,),
+                    dtype=np.int8
+                ),
+                'unnecessary_moves': spaces.Box(
+                    low=0,
+                    high=float('inf'),
+                    shape=(1,),
+                    dtype=np.int32
+                )
             })
         })
         
@@ -168,6 +184,14 @@ class CarDodgingEnv(gym.Env):
         self.current_reward = 0
         self.max_reward = 0
         
+        # Thêm biến theo dõi
+        self.last_move_direction = 1  # 0: left, 1: stay, 2: right
+        self.unnecessary_moves = 0    # Số lần di chuyển không cần thiết
+        
+        # Thêm biến theo dõi trạng thái trong vùng dodge
+        self.in_dodge_zones = [False] * self.num_lanes  # Theo dõi từng làn
+        self.successful_dodges = set()  # Lưu các obstacle đã né thành công
+
     def reset(self, seed=None, options=None):
         """Khởi tạo lại trạng thái môi trường về ban đầu
         
@@ -198,6 +222,14 @@ class CarDodgingEnv(gym.Env):
         self.last_reward_time = self.start_time
         self.elapsed_time = 0
         self.current_reward = 0
+        
+        # Reset các biến theo dõi di chuyển
+        self.last_move_direction = 1
+        self.unnecessary_moves = 0
+        
+        # Reset trạng thái dodge
+        self.in_dodge_zones = [False] * self.num_lanes
+        self.successful_dodges = set()
         
         observation = self._get_obs()
         info = {}
@@ -254,13 +286,34 @@ class CarDodgingEnv(gym.Env):
             self._spawn_new_obstacle()
             self.last_spawn_time = current_time
         
-        # Xử lý action của agent
-        if current_time - self.last_action_time >= self.agent_limit_tick:
+        # Khởi tạo reward
+        step_reward = 0
+        
+        # Xử lý action và tính reward chỉ khi hết limit tick
+        can_act = current_time - self.last_action_time >= self.agent_limit_tick
+        if can_act:
             if action == 0 and self.player_lane > 0:
                 self.player_lane -= 1
             elif action == 2 and self.player_lane < self.num_lanes - 1:
                 self.player_lane += 1
+            self.last_move_direction = action
             self.last_action_time = current_time
+            
+            # Chỉ tính reward khi agent thực sự thực hiện được hành động
+            if self.last_reward_time is None:
+                self.last_reward_time = current_time
+            elif current_time - self.last_reward_time >= self.reward_interval:
+                # Base survival reward
+                survival_reward = self.reward_config["survival_reward"]["base_points"]
+                
+                # Dodge reward
+                dodge_reward = self._calculate_dodge_reward()
+                
+                # Movement penalty
+                movement_penalty = self._calculate_movement_penalty(action)
+                
+                step_reward = survival_reward + dodge_reward + movement_penalty
+                self.last_reward_time = current_time
 
         self.player_pos[0] = self.lane_width * self.player_lane + (self.lane_width - self.car_size[0]) // 2
         
@@ -272,22 +325,6 @@ class CarDodgingEnv(gym.Env):
             self.render()
             time.sleep(1)
             step_reward = self.collision_penalty
-        else:
-            # Tính reward như bình thường
-            if self.last_reward_time is None:
-                self.last_reward_time = current_time
-                step_reward = 0
-            elif current_time - self.last_reward_time >= self.reward_interval:
-                # Survival reward
-                survival_config = self.reward_config["survival_reward"]
-                survival_reward = survival_config["base_points"] * (1 + self.elapsed_time * survival_config["time_multiplier"])
-                
-                # Dodge reward
-                dodge_reward = self._calculate_dodge_reward()
-                step_reward = survival_reward + dodge_reward
-                self.last_reward_time = current_time
-            else:
-                step_reward = 0
         
         # Cập nhật reward tổng
         self.current_reward += step_reward
@@ -308,26 +345,73 @@ class CarDodgingEnv(gym.Env):
         return False
 
     def _calculate_dodge_reward(self):
-        """Tính toán dodge reward"""
+        """Tính toán dodge reward chỉ khi né thành công"""
         dodge_config = self.reward_config["dodge_reward"]
-        min_distance = float('inf')
+        dodge_reward = 0
+        threshold = dodge_config["distance_threshold"]
+        
+        # Cập nhật trạng thái dodge cho mỗi làn
+        current_dodge_zones = [False] * self.num_lanes
+        
+        for lane_idx, obs in enumerate(self.obstacles):
+            if obs is not None:
+                distance = abs(obs[1] - self.player_pos[1])
+                
+                # Kiểm tra xem agent có trong vùng dodge không
+                if distance <= threshold:
+                    current_dodge_zones[lane_idx] = True
+                    
+                    # Nếu trước đó không trong vùng dodge, đánh dấu bắt đầu dodge
+                    if not self.in_dodge_zones[lane_idx]:
+                        self.in_dodge_zones[lane_idx] = True
+                else:
+                    # Nếu ra khỏi vùng dodge và trước đó đang trong vùng dodge
+                    if self.in_dodge_zones[lane_idx]:
+                        # Kiểm tra xem có phải dodge thành công không
+                        if lane_idx != self.player_lane and id(obs) not in self.successful_dodges:
+                            # Tính điểm dodge thành công
+                            if dodge_config["distance_scaling"]:
+                                distance_factor = 1 - (min(distance, threshold) / threshold)
+                                multiplier = (
+                                    dodge_config["min_distance_multiplier"] + 
+                                    (dodge_config["max_distance_multiplier"] - dodge_config["min_distance_multiplier"]) * 
+                                    distance_factor
+                                )
+                                dodge_reward += dodge_config["bonus_points"] * multiplier
+                            else:
+                                dodge_reward += dodge_config["bonus_points"]
+                            
+                            # Đánh dấu obstacle này đã được tính điểm
+                            self.successful_dodges.add(id(obs))
+                        
+                        # Reset trạng thái dodge cho làn này
+                        self.in_dodge_zones[lane_idx] = False
+        
+        return dodge_reward
+
+    def _calculate_movement_penalty(self, action):
+        """Tính penalty khi di chuyển không cần thiết"""
+        # Chỉ tính penalty khi có di chuyển (action != 1)
+        if action == 1:  # đứng yên
+            return 0
+            
+        # Kiểm tra xem có obstacle nào trong vùng dodge không
+        dodge_threshold = self.reward_config["dodge_reward"]["distance_threshold"]
+        has_nearby_obstacle = False
         
         for obs in self.obstacles:
             if obs is not None:
                 distance = abs(obs[1] - self.player_pos[1])
-                min_distance = min(min_distance, distance)
+                if distance <= dodge_threshold:
+                    has_nearby_obstacle = True
+                    break
         
-        if min_distance >= dodge_config["distance_threshold"]:
-            return 0
-            
-        if dodge_config["distance_scaling"]:
-            distance_factor = 1 - (min_distance / dodge_config["distance_threshold"])
-            multiplier = (dodge_config["min_distance_multiplier"] + 
-                        (dodge_config["max_distance_multiplier"] - 
-                         dodge_config["min_distance_multiplier"]) * distance_factor)
-            return dodge_config["bonus_points"] * multiplier
-            
-        return dodge_config["bonus_points"]
+        # Nếu không có obstacle gần mà vẫn di chuyển -> phạt
+        if not has_nearby_obstacle:
+            self.unnecessary_moves += 1  # Tăng số lần di chuyển không cần thiết
+            return self.reward_config["movement_penalty"]
+        
+        return 0
 
     def _get_state_info(self):
         """Lấy thông tin về trạng thái hiện tại của môi trường
@@ -417,12 +501,9 @@ class CarDodgingEnv(gym.Env):
             side_panel.blit(survival_title, (10, y_pos))
             
             base_points = self.reward_config["survival_reward"]["base_points"]
-            time_mult = self.reward_config["survival_reward"]["time_multiplier"]
-            survival_text = self.font.render(f"Base: +{base_points}/s", True, (0, 100, 0))
-            time_bonus_text = self.font.render(f"Time bonus: +{time_mult:.1f}/s", True, (0, 100, 0))
+            survival_text = self.font.render(f"Base: +{base_points}", True, (0, 100, 0))
             
             side_panel.blit(survival_text, (20, y_pos + 25))
-            side_panel.blit(time_bonus_text, (20, y_pos + 50))
             
             # Dodge reward
             y_pos += 90
@@ -440,13 +521,22 @@ class CarDodgingEnv(gym.Env):
             side_panel.blit(threshold_text, (20, y_pos + 25))
             side_panel.blit(bonus_text, (20, y_pos + 50))
             
-            # Penalty
+            # Penalty section
             y_pos += 115
             penalty_title = self.font.render("Penalties:", True, (255, 0, 0))
             side_panel.blit(penalty_title, (10, y_pos))
             
+            # Hiển thị collision penalty
             collision_text = self.font.render(f"Collision: {self.collision_penalty}", True, (255, 0, 0))
             side_panel.blit(collision_text, (20, y_pos + 25))
+            
+            # Thêm movement penalty
+            movement_text = self.font.render(f"Movement: {self.reward_config['movement_penalty']}", True, (255, 165, 0))  # Màu cam
+            side_panel.blit(movement_text, (20, y_pos + 50))
+            
+            # Thêm chú thích về movement penalty
+            note_text = self.font.render("(when no obstacles nearby)", True, (100, 100, 100))  # Màu xám
+            side_panel.blit(note_text, (30, y_pos + 75))
             
             # Vẽ đường phân cách bên trái panel phải
             pygame.draw.line(self.screen, (150, 150, 150),
@@ -476,7 +566,7 @@ class CarDodgingEnv(gym.Env):
             # Vẽ agent bằng hình ảnh
             game_surface.blit(self.agent_img, self.player_pos)
             
-            # Vẽ obstacles bằng hình ảnh được chọn ngẫu nhiên
+            # Vẽ obstacles và dodge zone
             for i, obstacle in enumerate(self.obstacles):
                 if obstacle is not None:
                     # Lấy hình ảnh đã được chọn cho obstacle này
@@ -486,12 +576,40 @@ class CarDodgingEnv(gym.Env):
                         obstacle_img = np.random.choice(self.obstacle_imgs)
                         self.obstacle_images[i] = obstacle_img
                     
+                    # Vẽ dodge zone
+                    dodge_threshold = self.reward_config["dodge_reward"]["distance_threshold"]
+                    zone_surface = pygame.Surface((self.car_size[0], dodge_threshold * 2))
+                    zone_surface.set_alpha(50)  # Độ trong suốt
+                    
+                    # Màu của zone thay đổi theo khoảng cách
+                    distance = abs(obstacle[1] - self.player_pos[1])
+                    if distance <= dodge_threshold:
+                        zone_surface.fill((255, 165, 0))  # Màu cam khi trong vùng dodge
+                    else:
+                        zone_surface.fill((0, 255, 0))  # Màu xanh khi ngoài vùng dodge
+                    
+                    # Vẽ zone ở vị trí obstacle
+                    zone_pos = (
+                        obstacle[0],
+                        obstacle[1] - dodge_threshold
+                    )
+                    game_surface.blit(zone_surface, zone_pos)
+                    
+                    # Vẽ obstacle
                     game_surface.blit(obstacle_img, obstacle)
                     
                     # Vẽ khoảng cách
                     distance = abs(obstacle[1] - self.player_pos[1])
-                    dist_text = self.font.render(f"{int(distance)}", True, (255, 255, 255))  # Đổi màu text thành trắng
+                    dist_text = self.font.render(f"{int(distance)}", True, (255, 255, 255))
                     game_surface.blit(dist_text, (obstacle[0] + self.car_size[0] + 5, obstacle[1]))
+                    
+                    # Vẽ đường biên của dodge zone
+                    pygame.draw.rect(
+                        game_surface,
+                        (255, 255, 255),
+                        (zone_pos[0], zone_pos[1], self.car_size[0], dodge_threshold * 2),
+                        1  # Độ dày viền
+                    )
             
             # 4. Vẽ tất cả lên main screen
             self.screen.blit(top_panel, (0, 0))  # Panel trên
@@ -523,7 +641,7 @@ class CarDodgingEnv(gym.Env):
                 if distance < 0:
                     obstacles_distances[lane_idx] = abs(distance)
                     obstacles_speeds[lane_idx] = self.obstacle_speed
-        
+    
         return {
             'agent_lane': np.array([self.player_lane], dtype=np.float32),
             'obstacles_info': {
@@ -534,6 +652,10 @@ class CarDodgingEnv(gym.Env):
             'game_info': {
                 'elapsed_time': np.array([self.elapsed_time], dtype=np.float32),
                 'current_speed': np.array([self.obstacle_speed], dtype=np.float32)
+            },
+            'movement_info': {
+                'last_direction': np.array([self.last_move_direction], dtype=np.int8),
+                'unnecessary_moves': np.array([self.unnecessary_moves], dtype=np.int32)
             }
         }
 

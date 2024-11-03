@@ -24,38 +24,64 @@ class DQNNetwork(nn.Module):
         self.input_size = (
             1 +  # agent_lane
             3 * input_shape['num_lanes'] +  # obstacles_info (presence, distances, speeds)
-            2    # game_info (elapsed_time, current_speed)
+            2 +  # game_info (elapsed_time, current_speed)
+            2    # movement_info (last_direction, unnecessary_moves)
         )
         
-        # Tạo fully connected layers
         layers = []
         current_size = self.input_size
         
+        # Bỏ batch norm ở input layer
         for size in network_config['fc_layers']:
             layers.extend([
                 nn.Linear(current_size, size),
                 nn.ReLU(),
-                nn.Dropout(0.2)
+                nn.Dropout(0.1)
             ])
             current_size = size
-            
-        # Layer output cuối cùng
+        
+        # Output layer
         layers.append(nn.Linear(current_size, n_actions))
         
         self.network = nn.Sequential(*layers)
-        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Khởi tạo weights với Xavier initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.uniform_(m.bias, -0.1, 0.1)
+    
     def forward(self, x: dict) -> torch.Tensor:
-        # Chuyển dict observation thành vector
+        # Đảm bảo tất cả tensors có cùng số chiều
+        game_info_elapsed = x['game_info']['elapsed_time'].squeeze(-1) if x['game_info']['elapsed_time'].dim() == 3 else x['game_info']['elapsed_time']
+        game_info_speed = x['game_info']['current_speed'].squeeze(-1) if x['game_info']['current_speed'].dim() == 3 else x['game_info']['current_speed']
+        movement_last_dir = x['movement_info']['last_direction'].squeeze(-1) if x['movement_info']['last_direction'].dim() == 3 else x['movement_info']['last_direction']
+        movement_unnecessary = x['movement_info']['unnecessary_moves'].squeeze(-1) if x['movement_info']['unnecessary_moves'].dim() == 3 else x['movement_info']['unnecessary_moves']
+    
         flattened = torch.cat([
             x['agent_lane'],
             x['obstacles_info']['presence'],
             x['obstacles_info']['distances'],
             x['obstacles_info']['speeds'],
-            x['game_info']['elapsed_time'],
-            x['game_info']['current_speed']
+            game_info_elapsed,
+            game_info_speed,
+            movement_last_dir,
+            movement_unnecessary
         ], dim=1)
+    
+        # Xử lý NaN và Inf
+        flattened = torch.where(torch.isnan(flattened), torch.zeros_like(flattened), flattened)
+        flattened = torch.clamp(flattened, -1e6, 1e6)  # Giới hạn giá trị
+    
+        output = self.network(flattened)
+    
+        # Thêm một số noise nhỏ để tránh các giá trị giống hệt nhau
+        if self.training:
+            output = output + torch.randn_like(output) * 1e-4
         
-        return self.network(flattened)
+        return output
 
 class ReplayBuffer:
     """Bộ nhớ để lưu trữ và lấy mẫu các transition"""
@@ -74,7 +100,7 @@ class ReplayBuffer:
 class DQNAgent:
     """Agent DQN"""
     def __init__(self, config_path: str):
-        # Đọc config từ file JSON
+        # Đọc config t file JSON
         with open(config_path, 'r') as f:
             config = json.load(f)
         
@@ -141,12 +167,18 @@ class DQNAgent:
                     'speeds': torch.FloatTensor(state['obstacles_info']['speeds']).unsqueeze(0).to(self.device)
                 },
                 'game_info': {
-                    'elapsed_time': torch.FloatTensor(state['game_info']['elapsed_time']).unsqueeze(0).to(self.device),
-                    'current_speed': torch.FloatTensor(state['game_info']['current_speed']).unsqueeze(0).to(self.device)
+                    'elapsed_time': torch.FloatTensor([state['game_info']['elapsed_time']]).unsqueeze(0).to(self.device),
+                    'current_speed': torch.FloatTensor([state['game_info']['current_speed']]).unsqueeze(0).to(self.device)
+                },
+                'movement_info': {
+                    'last_direction': torch.FloatTensor([state['movement_info']['last_direction']]).unsqueeze(0).to(self.device),
+                    'unnecessary_moves': torch.FloatTensor([state['movement_info']['unnecessary_moves']]).unsqueeze(0).to(self.device)
                 }
             }
+            
             q_values = self.policy_net(state_tensors)
-            return q_values.max(1)[1].item()
+            action = q_values.max(1)[1].item()
+            return action
             
     def update(self) -> float:
         """Cập nhật model theo phương pháp đã chọn"""
@@ -157,6 +189,43 @@ class DQNAgent:
         else: 
             return self._update_td()
             
+    def _process_batch_states(self, states) -> dict:
+        """Chuyển đổi batch states thành tensors"""
+        return {
+            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in states])).to(self.device),
+            'obstacles_info': {
+                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in states])).to(self.device),
+                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in states])).to(self.device),
+                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in states])).to(self.device)
+            },
+            'game_info': {
+                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in states])).to(self.device),
+                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in states])).to(self.device)
+            },
+            'movement_info': {
+                'last_direction': torch.FloatTensor(np.vstack([s['movement_info']['last_direction'] for s in states])).to(self.device),
+                'unnecessary_moves': torch.FloatTensor(np.vstack([s['movement_info']['unnecessary_moves'] for s in states])).to(self.device)
+            }
+        }
+
+    def _normalize_values(self, values: torch.Tensor) -> torch.Tensor:
+        """Chuẩn hóa giá trị"""
+        return (values - values.mean()) / (values.std() + 1e-7)
+
+    def _update_networks(self, loss: torch.Tensor) -> float:
+        """Cập nhật networks và epsilon"""
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
+        self.optimizer.step()
+        
+        self.steps += 1
+        if self.steps % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.update_epsilon()
+        return loss.item()
+
     def _update_dqn(self) -> float:
         """Phương pháp DQN với Bellman equation"""
         if len(self.memory) < self.batch_size:
@@ -165,95 +234,26 @@ class DQNAgent:
         transitions = self.memory.sample(self.batch_size)
         batch = list(zip(*transitions))
         
-        # Chuyển đổi batch states từ dict sang tensor
-        batch_states = {
-            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[0]])).to(self.device),
-            'obstacles_info': {
-                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[0]])).to(self.device),
-                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[0]])).to(self.device),
-                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[0]])).to(self.device)
-            },
-            'game_info': {
-                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[0]])).to(self.device),
-                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[0]])).to(self.device)
-            }
-        }
+        # Chuyển đổi states và next_states
+        batch_states = self._process_batch_states(batch[0])
+        batch_next_states = self._process_batch_states(batch[3])
         
-        # Chuyển đổi batch next_states từ dict sang tensor
-        batch_next_states = {
-            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[3]])).to(self.device),
-            'obstacles_info': {
-                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[3]])).to(self.device),
-                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[3]])).to(self.device),
-                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[3]])).to(self.device)
-            },
-            'game_info': {
-                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[3]])).to(self.device),
-                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[3]])).to(self.device)
-            }
-        }
-        
+        # Chuyển đổi các thành phần khác
         actions = torch.LongTensor(batch[1]).to(self.device)
-        rewards = torch.FloatTensor(batch[2]).to(self.device)
+        rewards = self._normalize_values(torch.FloatTensor(batch[2]).to(self.device))
         dones = torch.FloatTensor(batch[4]).to(self.device)
         
-        # Tính current Q values và target Q values
+        # Tính toán Q-values
         current_q_values = self.policy_net(batch_states).gather(1, actions.unsqueeze(1))
+        
+        # Tính toán Q-values mục tiêu với target network
         with torch.no_grad():
             next_q_values = self.target_net(batch_next_states).max(1)[0]
             target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
             
-        loss = F.mse_loss(current_q_values, target_q_values.unsqueeze(1))
-        
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        # Cập nhật target network và epsilon
-        self.steps += 1
-        if self.steps % self.target_update == 0:
-            self.target_net.load_state_dict(self.policy_net.state_dict())
-        
-        self.update_epsilon()
-        
-        return loss.item()
-        
-    def _update_monte_carlo(self) -> float:
-        """Monte Carlo learning với returns thực tế"""
-        if not self.episode_buffer:
-            return 0.0
-            
-        states, actions, rewards = zip(*self.episode_buffer)
-        
-        # Tính returns cho mỗi step
-        returns = []
-        G = 0
-        for r in reversed(rewards):
-            G = r + self.gamma * G
-            returns.insert(0, G)
-            
-        states = torch.FloatTensor(np.array(states)).to(self.device)
-        actions = torch.LongTensor(actions).to(self.device)
-        returns = torch.FloatTensor(returns).to(self.device)
-        
-        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
-        loss = F.mse_loss(current_q_values, returns.unsqueeze(1))
-        
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        self.episode_buffer = []
-        
-        # Cập nhật target network và epsilon
-        self.steps += 1
-        if self.steps % self.target_update == 0:
-            self.target_net.load_state_dict(self.policy_net.state_dict())
-        
-        self.update_epsilon()
-        
-        return loss.item()
-        
+        loss = F.smooth_l1_loss(current_q_values, target_q_values.unsqueeze(1))
+        return self._update_networks(loss)
+
     def _update_td(self) -> float:
         """TD Learning với TD target"""
         if len(self.memory) < self.batch_size:
@@ -262,57 +262,53 @@ class DQNAgent:
         transitions = self.memory.sample(self.batch_size)
         batch = list(zip(*transitions))
         
-        # Chuyển đổi batch states và next_states tương tự như _update_dqn
-        batch_states = {
-            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[0]])).to(self.device),
-            'obstacles_info': {
-                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[0]])).to(self.device),
-                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[0]])).to(self.device),
-                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[0]])).to(self.device)
-            },
-            'game_info': {
-                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[0]])).to(self.device),
-                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[0]])).to(self.device)
-            }
-        }
+        # Chuyển đổi states và next_states
+        batch_states = self._process_batch_states(batch[0])
+        batch_next_states = self._process_batch_states(batch[3])
         
-        batch_next_states = {
-            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[3]])).to(self.device),
-            'obstacles_info': {
-                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[3]])).to(self.device),
-                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[3]])).to(self.device),
-                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[3]])).to(self.device)
-            },
-            'game_info': {
-                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[3]])).to(self.device),
-                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[3]])).to(self.device)
-            }
-        }
-        
+        # Chuyển đổi các thành phần khác
         actions = torch.LongTensor(batch[1]).to(self.device)
-        rewards = torch.FloatTensor(batch[2]).to(self.device)
+        rewards = self._normalize_values(torch.FloatTensor(batch[2]).to(self.device))
         dones = torch.FloatTensor(batch[4]).to(self.device)
         
-        # TD target: r + γ * V(s')
+        # Tính TD target
         current_q_values = self.policy_net(batch_states).gather(1, actions.unsqueeze(1))
         with torch.no_grad():
             next_state_values = self.policy_net(batch_next_states).max(1)[0]
             td_targets = rewards + (1 - dones) * self.gamma * next_state_values
             
-        loss = F.mse_loss(current_q_values, td_targets.unsqueeze(1))
+        loss = F.smooth_l1_loss(current_q_values, td_targets.unsqueeze(1))
+        return self._update_networks(loss)
+
+    def _update_monte_carlo(self) -> float:
+        """Monte Carlo learning với returns thực tế"""
+        if not self.episode_buffer:
+            return 0.0
+            
+        states, actions, rewards = zip(*self.episode_buffer)
         
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        # Chuyển đổi states
+        batch_states = self._process_batch_states(states)
         
-        # Cập nhật target network và epsilon
-        self.steps += 1
-        if self.steps % self.target_update == 0:
-            self.target_net.load_state_dict(self.policy_net.state_dict())
+        # Tính returns
+        returns = []
+        G = 0
+        for r in reversed(rewards):
+            G = r + self.gamma * G
+            returns.insert(0, G)
+        returns = self._normalize_values(torch.FloatTensor(returns).to(self.device))
         
-        self.update_epsilon()
+        # Chuyển đổi actions
+        actions = torch.LongTensor(actions).to(self.device)
         
-        return loss.item()
+        # Tính loss
+        current_q_values = self.policy_net(batch_states).gather(1, actions.unsqueeze(1))
+        loss = F.smooth_l1_loss(current_q_values, returns.unsqueeze(1))
+        
+        # Reset episode buffer
+        self.episode_buffer = []
+        
+        return self._update_networks(loss)
 
     def add_to_memory(self, state, action, reward, next_state, done):
         """Thêm transition vào bộ nhớ phù hợp"""

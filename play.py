@@ -8,6 +8,7 @@ from models import DQNAgent
 import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 def load_agent(config_path: str):
     """
@@ -99,7 +100,7 @@ def evaluate_agent(agent: DQNAgent, env: CarDodgingEnv, n_episodes: int = 5) -> 
         reward, time = play_episode(agent, env)
         rewards.append(reward)
         survival_times.append(time)
-        print(f"Episode {i+1}/{n_episodes}: Score = {reward:.1f}, Time = {time:.1f}s")
+        print(f"Episode {i+1}/{n_episodes}: Score = {reward:.1f}")
         
     mean_reward = np.mean(rewards)
     std_reward = np.std(rewards)
@@ -132,7 +133,6 @@ def main():
             mean_reward, std_reward, mean_time, std_time = evaluate_agent(agent, env, n_episodes=n_episodes)
             print(f"\nKết quả đánh giá:")
             print(f"Điểm trung bình: {mean_reward:.1f} ± {std_reward:.1f}")
-            print(f"Thời gian sống: {mean_time:.1f}s ± {std_time:.1f}s")
             
         except Exception as e:
             print(f"Lỗi khi chạy agent: {str(e)}")
