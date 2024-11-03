@@ -2,19 +2,19 @@ import os
 import time
 import warnings
 import traceback
-from tqdm import tqdm
 import json
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+import cv2
+import pygame
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
-import cv2
-import pygame
-
+from tqdm import tqdm
 from env import CarDodgingEnv
 from models import DQNAgent
+
 
 class ImagePreprocessingWrapper(gym.ObservationWrapper):
     """Wrapper để xử lý và giảm kích thước ảnh observation"""
@@ -36,11 +36,15 @@ class ImagePreprocessingWrapper(gym.ObservationWrapper):
 
 
 def setup_env(config) -> gym.Env:
-    """Khởi tạo và thiết lập môi trường với preprocessing
-    
-    Args:
-        config (dict, optional): Cấu hình cho môi trường. Default: None
-    """
+    """Khởi tạo và thiết lập môi trường với preprocessing"""
+    if config is None:
+        raise ValueError("Config không được để trống")
+        
+    required_keys = ['num_lanes', 'agent_limit_tick', 'spawn_interval']
+    missing_keys = [key for key in required_keys if key not in config]
+    if missing_keys:
+        raise ValueError(f"Thiếu các tham số cấu hình: {missing_keys}")
+        
     env = CarDodgingEnv(config)
     env = ImagePreprocessingWrapper(env)
     return env
@@ -74,120 +78,91 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
         pbar = tqdm(total=time_limit if use_time_limit else total_timesteps,
                    desc='Training Progress',
                    unit='s' if use_time_limit else ' steps')
-        last_minute = -1
         
         while True:
-            # Xử lý sự kiện Pygame và render
+            # Xử lý sự kiện Pygame
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or \
+                   (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
+                    print("\nDừng training theo yêu cầu người dùng")
+                    agent.save(agent.model_path)
+                    print(f"Đã lưu model tại: {agent.model_path}")
+                    return agent
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                    render_training = not render_training
+                    tqdm.write(f"\nĐã {'bật' if render_training else 'tắt'} render")
+            
             if render_training:
                 env.render()
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT or \
-                       (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
-                        print("\nDừng training theo yêu cầu người dùng")
-                        agent.save(agent.model_path)
-                        print(f"Đã lưu model tại: {agent.model_path}")
-                        return agent
-                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                        render_training = not render_training
-                        tqdm.write(f"\nĐã {'bật' if render_training else 'tắt'} render")
-            else:
-                # Vẫn check sự kiện khi không render
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT or \
-                       (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
-                        print("\nDừng training theo yêu cầu người dùng")
-                        agent.save(agent.model_path)
-                        print(f"Đã lưu model tại: {agent.model_path}")
-                        return agent
-                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                        render_training = not render_training
-                        tqdm.write(f"\nĐã {'bật' if render_training else 'tắt'} render")
 
-            current_time = time.time()
-            elapsed_time = current_time - start_time
-            elapsed_minutes = int(elapsed_time / 60)
-            
-            # Cập nhật progress bar theo thời gian
-            if use_time_limit:
-                # Cập nhật progress bar mỗi 0.1 giây
-                if current_time - last_update >= 0.1:
-                    pbar.n = min(int(elapsed_time), time_limit)
-                    pbar.refresh()
-                    last_update = current_time
-                
-                # Kiểm tra điều kiện dừng theo thời gian
-                if elapsed_time >= time_limit:
-                    print("\nĐã đạt giới hạn thời gian training")
-                    break
-            else:
-                # Cập nhật theo số steps
-                pbar.n = step
-                pbar.refresh()
-                
-                # Kiểm tra điều kiện dừng theo steps
-                if step >= total_timesteps:
-                    print("\nĐã đạt số steps tối đa")
-                    break
-            
             # Training loop
             action = agent.select_action(obs)
             next_obs, reward, done, _, info = env.step(action)
+            current_time = time.time()
             
-            # Lấy thông tin từ info
-            episode_time = info.get('elapsed_time', 0)
-            current_score = info.get('current_reward', 0)
-            
+            # Cập nhật progress bar mỗi 1s
+            if current_time - last_update >= 1:
+                if use_time_limit:
+                    pbar.update(int(current_time - last_update))
+                else:
+                    pbar.update(1)
+                pbar.set_postfix({
+                    'Episodes': episode_count,
+                    'Score': f'{current_episode_reward:.1f}',
+                    'Loss': f'{episode_losses[-1]:.6f}' if episode_losses else 'N/A',
+                    'Epsilon': f'{agent.epsilon:.3f}'
+                })
+                last_update = current_time
+                
             current_episode_reward += reward
-            
-            # Cập nhật max survival time
-            if episode_time > max_survival_time:
-                max_survival_time = episode_time
-            
-            # Lưu transition và update model
-            agent.add_to_memory(obs, action, reward, next_obs, done)
-            if len(agent.memory) >= agent.batch_size:
-                loss = agent.update()
-                if loss is not None:
-                    episode_losses.append(loss)
             
             if done:
                 episode_count += 1
                 total_rewards += current_episode_reward
                 mean_loss = np.mean(episode_losses) if episode_losses else 0
                 
-                tqdm.write(f"Episode {episode_count} - Reward: {current_episode_reward}, Mean Loss: {mean_loss:.6f}")
+                tqdm.write(f"Episode {episode_count} - Reward: {current_episode_reward:.2f}, Mean Loss: {mean_loss:.6f}")
                 
                 current_episode_reward = 0
                 episode_losses = []
                 obs, _ = env.reset()
             else:
                 obs = next_obs
+                
+            # Cập nhật max survival time
+            if info.get('elapsed_time', 0) > max_survival_time:
+                max_survival_time = info.get('elapsed_time', 0)
             
-            # Cập nhật progress bar với thông tin mới
-            pbar.set_postfix({
-                'Episodes': episode_count,
-                'Score': f'{current_score:.1f}',
-                'Time': f'{episode_time:.1f}s',
-                'Loss': f'{episode_losses[-1]:.6f}' if episode_losses else 'N/A'
-            })
-            
-            step += 1
+            # Lưu transition và update model
+            agent.add_to_memory(obs, action, reward, next_obs, done)
+            if len(agent.memory) >= agent.batch_size * 2:
+                loss = agent.update()
+                if loss is not None:
+                    episode_losses.append(loss)
             
             # Lưu model mỗi phút
-            if elapsed_minutes > last_minute:
-                last_minute = elapsed_minutes
+            if current_time - start_time >= 60:
+                start_time = current_time
                 agent.save(agent.model_path)
                 
                 mean_reward = total_rewards / max(episode_count, 1)
                 mean_loss = np.mean(episode_losses) if episode_losses else 0
                 
                 tqdm.write("\n------------------------")
-                tqdm.write(f"Đã train được: \n  - {elapsed_minutes} phút \n  - {episode_count} episodes \n  - {step} steps")
+                tqdm.write(f"Đã train được: \n  - {int((current_time - start_time) / 60)} phút \n  - {episode_count} episodes \n  - {step} steps")
                 tqdm.write(f"Thời gian sống tối đa: {max_survival_time:.1f}s")
                 tqdm.write(f"Điểm trung bình: {mean_reward:.1f}")
                 tqdm.write(f"Loss trung bình: {mean_loss:.6f}")
                 tqdm.write(f"Đã lưu model tại: {agent.model_path}")
                 tqdm.write("------------------------\n")
+
+            step += 1
+            elapsed_time = time.time() - start_time
+            
+            
+            if (use_time_limit and elapsed_time >= time_limit) or \
+               (not use_time_limit and step >= total_timesteps):
+                break
 
         # Lưu model cuối cùng và return
         agent.save(agent.model_path)

@@ -4,7 +4,7 @@ import pygame
 import json
 import traceback
 from env import CarDodgingEnv
-from DQNagent import ImagePreprocessingWrapper
+from train import ImagePreprocessingWrapper
 from models import DQNAgent
 import warnings
 

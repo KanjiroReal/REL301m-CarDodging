@@ -90,21 +90,17 @@ class DQNAgent:
         self.agent_config = config['agent_config']
         self.training_config = config['training_config']
         
-        # Khởi tạo các thành phần
         self.learning_method = LearningMethod(self.training_config['learning_method'])
         self.episode_buffer = []
         self.batch_size = self.agent_config['batch_size']
         self.gamma = self.agent_config['gamma']
         
-        # Thiết lập device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') \
                     if self.agent_config['device'] == 'auto' else torch.device(self.agent_config['device'])
         
-        # Lấy input_shape và n_actions từ config
         self.input_shape = tuple(self.agent_config['input_shape'])
         self.n_actions = self.agent_config['n_actions']
         
-        # Khởi tạo networks với config
         network_config = self.agent_config['network_architecture']
         self.policy_net = DQNNetwork(self.input_shape, self.n_actions, network_config).to(self.device)
         self.target_net = DQNNetwork(self.input_shape, self.n_actions, network_config).to(self.device)
@@ -151,7 +147,7 @@ class DQNAgent:
             return self._update_dqn()
         elif self.learning_method == LearningMethod.MONTE_CARLO:
             return self._update_monte_carlo()
-        else:  # TD Learning
+        else: 
             return self._update_td()
             
     def _update_dqn(self) -> float:

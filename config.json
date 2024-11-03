@@ -40,11 +40,11 @@
         "learning_rate": 5e-5,
         "buffer_size": 200000,
         "batch_size": 128,
-        "gamma": 0.99,
-        "target_update_interval": 2000,
-        "exploration_initial_eps": 1.0,
-        "exploration_final_eps": 0.1,
-        "exploration_decay": 0.003,
+        "gamma": 0.9,
+        "target_update_interval": 1000,
+        "exploration_initial_eps": 0.8,
+        "exploration_final_eps": 0.15,
+        "exploration_decay": 0.0001,
         "device": "auto",
         "input_shape": [3, 84, 84],
         "n_actions": 3,
@@ -54,12 +54,12 @@
                 {"filters": 64, "kernel_size": 4, "stride": 2},
                 {"filters": 64, "kernel_size": 3, "stride": 1}
             ],
-            "fc_layers": [512, 256]
+            "fc_layers": [512, 256, 64]
         }
     },
     "training_config": {
         "total_timesteps": 10000,
-        "training_minutes": 60,
+        "training_minutes": 120,
         "use_time_limit": true,
         "learning_method": "dqn",
         "render_training": true

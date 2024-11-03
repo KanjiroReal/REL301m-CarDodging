@@ -216,16 +216,21 @@ class CarDodgingEnv(gym.Env):
         self.player_pos[0] = self.lane_width * self.player_lane + (self.lane_width - self.car_size[0]) // 2
         
         # Kiểm tra va chạm
-        done = self._check_collision() or self.steps >= self.max_steps
+        collision = self._check_collision()
+        done = collision or self.steps >= self.max_steps
         
-        # Chỉ tính reward sau mỗi reward_interval
-        if self.last_reward_time is None:
-            self.last_reward_time = current_time
-            step_reward = 0
-        elif current_time - self.last_reward_time >= self.reward_interval:
-            if done:
-                step_reward = self.collision_penalty
-            else:
+        if collision:
+            # Render lại một lần nữa để thấy trạng thái va chạm
+            self.render()
+            # Dừng 1 giây
+            time.sleep(1)
+            step_reward = self.collision_penalty
+        else:
+            # Tính reward như bình thường
+            if self.last_reward_time is None:
+                self.last_reward_time = current_time
+                step_reward = 0
+            elif current_time - self.last_reward_time >= self.reward_interval:
                 # Survival reward
                 survival_config = self.reward_config["survival_reward"]
                 survival_reward = survival_config["base_points"] * (1 + self.elapsed_time * survival_config["time_multiplier"])
@@ -234,11 +239,11 @@ class CarDodgingEnv(gym.Env):
                 dodge_reward = self._calculate_dodge_reward()
                     
                 step_reward = survival_reward + dodge_reward
-            
-            self.last_reward_time = current_time
-        else:
-            step_reward = 0
-            
+                
+                self.last_reward_time = current_time
+            else:
+                step_reward = 0
+        
         # Cập nhật reward tổng
         self.current_reward += step_reward
         self.max_reward = max(self.max_reward, self.current_reward)
@@ -422,6 +427,7 @@ class CarDodgingEnv(gym.Env):
                                    (x, min(y + dash_length, self.game_window_size[1])), 2)
                     y += dash_length + gap_length
             
+
             # Vẽ agent bằng hình ảnh
             game_surface.blit(self.agent_img, self.player_pos)
             
