@@ -1,7 +1,7 @@
 {
     "env_config": {
         "num_lanes": 5,
-        "agent_limit_tick": 0.3,
+        "agent_limit_tick": 0.1,
         "spawn_interval": 0.5,
         "max_steps": 10000,
         "obstacle_speed": 480,
@@ -23,7 +23,7 @@
         },
         "window_size": {
             "game_width": 500,
-            "game_height": 800,
+            "game_height": 600,
             "info_panel_height": 50,
             "side_panel_width": 200
         },
@@ -37,29 +37,24 @@
         }
     },
     "agent_config": {
-        "learning_rate": 5e-5,
-        "buffer_size": 200000,
-        "batch_size": 128,
-        "gamma": 0.9,
-        "target_update_interval": 1000,
-        "exploration_initial_eps": 0.8,
-        "exploration_final_eps": 0.15,
-        "exploration_decay": 0.0001,
+        "learning_rate": 5e-4,
+        "buffer_size": 100000,
+        "batch_size": 64,
+        "gamma": 0.99,
+        "target_update_interval": 500,
+        "exploration_initial_eps": 1.0,
+        "exploration_final_eps": 0.05,
+        "exploration_decay": 0.000001,
         "device": "auto",
-        "input_shape": [3, 84, 84],
+        "num_lanes": 5,
         "n_actions": 3,
         "network_architecture": {
-            "cnn_layers": [
-                {"filters": 32, "kernel_size": 8, "stride": 4},
-                {"filters": 64, "kernel_size": 4, "stride": 2},
-                {"filters": 64, "kernel_size": 3, "stride": 1}
-            ],
-            "fc_layers": [512, 256, 64]
+            "fc_layers": [512, 256, 128, 64]
         }
     },
     "training_config": {
         "total_timesteps": 10000,
-        "training_minutes": 120,
+        "training_minutes": 30,
         "use_time_limit": true,
         "learning_method": "dqn",
         "render_training": true

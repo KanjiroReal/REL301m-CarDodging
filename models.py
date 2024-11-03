@@ -16,55 +16,46 @@ class LearningMethod(Enum):
     TD = "td"
 
 class DQNNetwork(nn.Module):
-    """Mạng neural cho DQN"""
-    def __init__(self, input_shape: Tuple[int, ...], n_actions: int, network_config: dict):
+    """Mạng neural cho DQN với input dạng vector"""
+    def __init__(self, input_shape: dict, n_actions: int, network_config: dict):
         super().__init__()
         
-        # Tạo CNN layers từ config
-        cnn_layers = []
-        current_channels = input_shape[0]
+        # Tính toán kích thước input flattened
+        self.input_size = (
+            1 +  # agent_lane
+            3 * input_shape['num_lanes'] +  # obstacles_info (presence, distances, speeds)
+            2    # game_info (elapsed_time, current_speed)
+        )
         
-        for layer_config in network_config['cnn_layers']:
-            cnn_layers.extend([
-                nn.Conv2d(current_channels, 
-                         layer_config['filters'], 
-                         kernel_size=layer_config['kernel_size'], 
-                         stride=layer_config['stride'],
-                         padding=layer_config['kernel_size']//2),
-                nn.ReLU(),
-                nn.Dropout2d(0.2)
-            ])
-            current_channels = layer_config['filters']
-            
-        cnn_layers.append(nn.AdaptiveAvgPool2d((4, 4)))
-        cnn_layers.append(nn.Flatten())
-        self.features = nn.Sequential(*cnn_layers)
-        
-        # Tính kích thước feature sau CNN
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, *input_shape)
-            n_flatten = self.features(dummy_input).shape[1]
-        
-        # Tạo FC layers từ config
-        fc_layers = []
-        current_size = n_flatten
+        # Tạo fully connected layers
+        layers = []
+        current_size = self.input_size
         
         for size in network_config['fc_layers']:
-            fc_layers.extend([
+            layers.extend([
                 nn.Linear(current_size, size),
                 nn.ReLU(),
-                nn.Dropout(0.3)
+                nn.Dropout(0.2)
             ])
             current_size = size
             
         # Layer output cuối cùng
-        fc_layers.append(nn.Linear(current_size, n_actions))
+        layers.append(nn.Linear(current_size, n_actions))
         
-        self.fc = nn.Sequential(*fc_layers)
+        self.network = nn.Sequential(*layers)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.features(x)
-        return self.fc(x)
+    def forward(self, x: dict) -> torch.Tensor:
+        # Chuyển dict observation thành vector
+        flattened = torch.cat([
+            x['agent_lane'],
+            x['obstacles_info']['presence'],
+            x['obstacles_info']['distances'],
+            x['obstacles_info']['speeds'],
+            x['game_info']['elapsed_time'],
+            x['game_info']['current_speed']
+        ], dim=1)
+        
+        return self.network(flattened)
 
 class ReplayBuffer:
     """Bộ nhớ để lưu trữ và lấy mẫu các transition"""
@@ -98,7 +89,11 @@ class DQNAgent:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') \
                     if self.agent_config['device'] == 'auto' else torch.device(self.agent_config['device'])
         
-        self.input_shape = tuple(self.agent_config['input_shape'])
+        # Thay đổi input_shape thành dict chứa thông tin về kích thước observation
+        self.input_shape = {
+            'num_lanes': self.agent_config['num_lanes']
+        }
+        
         self.n_actions = self.agent_config['n_actions']
         
         network_config = self.agent_config['network_architecture']
@@ -131,14 +126,26 @@ class DQNAgent:
         # Tạo thư mục nếu chưa tồn tại
         os.makedirs(self.model_dir, exist_ok=True)
 
-    def select_action(self, state: np.ndarray) -> int:
-        """Chọn action theo epsilon-greedy policy"""
+    def select_action(self, state: dict) -> int:
+        """Chọn action với state dạng dict"""
         if random.random() < self.epsilon:
             return random.randrange(self.n_actions)
             
         with torch.no_grad():
-            state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            q_values = self.policy_net(state)
+            # Chuyển các numpy array trong dict thành tensors
+            state_tensors = {
+                'agent_lane': torch.FloatTensor(state['agent_lane']).unsqueeze(0).to(self.device),
+                'obstacles_info': {
+                    'presence': torch.FloatTensor(state['obstacles_info']['presence']).unsqueeze(0).to(self.device),
+                    'distances': torch.FloatTensor(state['obstacles_info']['distances']).unsqueeze(0).to(self.device),
+                    'speeds': torch.FloatTensor(state['obstacles_info']['speeds']).unsqueeze(0).to(self.device)
+                },
+                'game_info': {
+                    'elapsed_time': torch.FloatTensor(state['game_info']['elapsed_time']).unsqueeze(0).to(self.device),
+                    'current_speed': torch.FloatTensor(state['game_info']['current_speed']).unsqueeze(0).to(self.device)
+                }
+            }
+            q_values = self.policy_net(state_tensors)
             return q_values.max(1)[1].item()
             
     def update(self) -> float:
@@ -158,25 +165,48 @@ class DQNAgent:
         transitions = self.memory.sample(self.batch_size)
         batch = list(zip(*transitions))
         
-        states = torch.FloatTensor(np.array(batch[0])).to(self.device)
+        # Chuyển đổi batch states từ dict sang tensor
+        batch_states = {
+            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[0]])).to(self.device),
+            'obstacles_info': {
+                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[0]])).to(self.device),
+                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[0]])).to(self.device),
+                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[0]])).to(self.device)
+            },
+            'game_info': {
+                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[0]])).to(self.device),
+                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[0]])).to(self.device)
+            }
+        }
+        
+        # Chuyển đổi batch next_states từ dict sang tensor
+        batch_next_states = {
+            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[3]])).to(self.device),
+            'obstacles_info': {
+                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[3]])).to(self.device),
+                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[3]])).to(self.device),
+                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[3]])).to(self.device)
+            },
+            'game_info': {
+                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[3]])).to(self.device),
+                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[3]])).to(self.device)
+            }
+        }
+        
         actions = torch.LongTensor(batch[1]).to(self.device)
         rewards = torch.FloatTensor(batch[2]).to(self.device)
-        next_states = torch.FloatTensor(np.array(batch[3])).to(self.device)
         dones = torch.FloatTensor(batch[4]).to(self.device)
         
-        # Bellman equation: Q(s,a) = r + γ * max(Q(s',a'))
-        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
+        # Tính current Q values và target Q values
+        current_q_values = self.policy_net(batch_states).gather(1, actions.unsqueeze(1))
         with torch.no_grad():
-            next_q_values = self.target_net(next_states).max(1)[0]
+            next_q_values = self.target_net(batch_next_states).max(1)[0]
             target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
             
         loss = F.mse_loss(current_q_values, target_q_values.unsqueeze(1))
         
         self.optimizer.zero_grad()
         loss.backward()
-        
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
-        
         self.optimizer.step()
         
         # Cập nhật target network và epsilon
@@ -211,8 +241,6 @@ class DQNAgent:
         
         self.optimizer.zero_grad()
         loss.backward()
-        # Thêm gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         
         self.episode_buffer = []
@@ -234,24 +262,47 @@ class DQNAgent:
         transitions = self.memory.sample(self.batch_size)
         batch = list(zip(*transitions))
         
-        states = torch.FloatTensor(np.array(batch[0])).to(self.device)
+        # Chuyển đổi batch states và next_states tương tự như _update_dqn
+        batch_states = {
+            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[0]])).to(self.device),
+            'obstacles_info': {
+                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[0]])).to(self.device),
+                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[0]])).to(self.device),
+                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[0]])).to(self.device)
+            },
+            'game_info': {
+                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[0]])).to(self.device),
+                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[0]])).to(self.device)
+            }
+        }
+        
+        batch_next_states = {
+            'agent_lane': torch.FloatTensor(np.vstack([s['agent_lane'] for s in batch[3]])).to(self.device),
+            'obstacles_info': {
+                'presence': torch.FloatTensor(np.vstack([s['obstacles_info']['presence'] for s in batch[3]])).to(self.device),
+                'distances': torch.FloatTensor(np.vstack([s['obstacles_info']['distances'] for s in batch[3]])).to(self.device),
+                'speeds': torch.FloatTensor(np.vstack([s['obstacles_info']['speeds'] for s in batch[3]])).to(self.device)
+            },
+            'game_info': {
+                'elapsed_time': torch.FloatTensor(np.vstack([s['game_info']['elapsed_time'] for s in batch[3]])).to(self.device),
+                'current_speed': torch.FloatTensor(np.vstack([s['game_info']['current_speed'] for s in batch[3]])).to(self.device)
+            }
+        }
+        
         actions = torch.LongTensor(batch[1]).to(self.device)
         rewards = torch.FloatTensor(batch[2]).to(self.device)
-        next_states = torch.FloatTensor(np.array(batch[3])).to(self.device)
         dones = torch.FloatTensor(batch[4]).to(self.device)
         
         # TD target: r + γ * V(s')
-        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
+        current_q_values = self.policy_net(batch_states).gather(1, actions.unsqueeze(1))
         with torch.no_grad():
-            next_state_values = self.policy_net(next_states).max(1)[0]
+            next_state_values = self.policy_net(batch_next_states).max(1)[0]
             td_targets = rewards + (1 - dones) * self.gamma * next_state_values
             
         loss = F.mse_loss(current_q_values, td_targets.unsqueeze(1))
         
         self.optimizer.zero_grad()
         loss.backward()
-        # Thêm gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         
         # Cập nhật target network và epsilon

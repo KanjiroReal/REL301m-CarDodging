@@ -59,7 +59,56 @@ class CarDodgingEnv(gym.Env):
         self.line_color = tuple(config["colors"]["line"])
         
         self.action_space = spaces.Discrete(3)
-        self.observation_space = spaces.Box(low=0, high=255, shape=(self.window_size[1], self.window_size[0], 3), dtype=np.uint8)
+        self.observation_space = spaces.Dict({
+            # Vị trí hiện tại của agent (index của làn đường)
+            'agent_lane': spaces.Box(
+                low=0, 
+                high=self.num_lanes-1,
+                shape=(1,),
+                dtype=np.float32
+            ),
+            
+            # Thông tin về obstacles trên mỗi làn
+            'obstacles_info': spaces.Dict({
+                # Có obstacle trên làn hay không (binary)
+                'presence': spaces.Box(
+                    low=0,
+                    high=1,
+                    shape=(self.num_lanes,),
+                    dtype=np.int8
+                ),
+                # Khoảng cách tới obstacle gần nhất trên mỗi làn
+                'distances': spaces.Box(
+                    low=0,
+                    high=float('inf'),
+                    shape=(self.num_lanes,),
+                    dtype=np.float32
+                ),
+                # Tốc độ của obstacles
+                'speeds': spaces.Box(
+                    low=0,
+                    high=float('inf'),
+                    shape=(self.num_lanes,),
+                    dtype=np.float32
+                )
+            }),
+            
+            # Thông tin bổ sung
+            'game_info': spaces.Dict({
+                'elapsed_time': spaces.Box(
+                    low=0,
+                    high=float('inf'),
+                    shape=(1,),
+                    dtype=np.float32
+                ),
+                'current_speed': spaces.Box(
+                    low=0,
+                    high=float('inf'),
+                    shape=(1,),
+                    dtype=np.float32
+                )
+            })
+        })
         
         pygame.init()
         self.screen = pygame.display.set_mode(self.window_size)
@@ -220,9 +269,7 @@ class CarDodgingEnv(gym.Env):
         done = collision or self.steps >= self.max_steps
         
         if collision:
-            # Render lại một lần nữa để thấy trạng thái va chạm
             self.render()
-            # Dừng 1 giây
             time.sleep(1)
             step_reward = self.collision_penalty
         else:
@@ -237,9 +284,7 @@ class CarDodgingEnv(gym.Env):
                 
                 # Dodge reward
                 dodge_reward = self._calculate_dodge_reward()
-                    
                 step_reward = survival_reward + dodge_reward
-                
                 self.last_reward_time = current_time
             else:
                 step_reward = 0
@@ -462,15 +507,35 @@ class CarDodgingEnv(gym.Env):
             return False
 
     def _get_obs(self):
-        """Lấy observation từ trạng thái hiện tại của môi trường
+        """Trả về observation dạng vector thay vì hình ảnh"""
+        # Khởi tạo mảng thông tin obstacles
+        obstacles_presence = np.zeros(self.num_lanes, dtype=np.int8)
+        obstacles_distances = np.full(self.num_lanes, float('inf'), dtype=np.float32)
+        obstacles_speeds = np.zeros(self.num_lanes, dtype=np.float32)
         
-        Args:
-            Không có tham số đầu vào
-            
-        Returns:
-            np.ndarray: Ma trận RGB thể hiện trạng thái màn hình
-        """
-        return np.transpose(np.array(pygame.surfarray.pixels3d(self.screen)), axes=(1, 0, 2))
+        # Cập nhật thông tin obstacles
+        for lane_idx, obstacle in enumerate(self.obstacles):
+            if obstacle is not None:
+                obstacles_presence[lane_idx] = 1
+                # Tính khoảng cách từ agent đến obstacle
+                distance = obstacle[1] - self.player_pos[1]
+                # Chỉ quan tâm đến obstacles phía trước agent
+                if distance < 0:
+                    obstacles_distances[lane_idx] = abs(distance)
+                    obstacles_speeds[lane_idx] = self.obstacle_speed
+        
+        return {
+            'agent_lane': np.array([self.player_lane], dtype=np.float32),
+            'obstacles_info': {
+                'presence': obstacles_presence,
+                'distances': obstacles_distances,
+                'speeds': obstacles_speeds
+            },
+            'game_info': {
+                'elapsed_time': np.array([self.elapsed_time], dtype=np.float32),
+                'current_speed': np.array([self.obstacle_speed], dtype=np.float32)
+            }
+        }
 
     def close(self):
         """Đóng môi trường và giải phóng tài nguyên

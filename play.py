@@ -4,7 +4,6 @@ import pygame
 import json
 import traceback
 from env import CarDodgingEnv
-from train import ImagePreprocessingWrapper
 from models import DQNAgent
 import warnings
 
@@ -38,7 +37,6 @@ def load_agent(config_path: str):
             
         # Khởi tạo môi trường với config
         env = CarDodgingEnv(config.get('env_config'))
-        env = ImagePreprocessingWrapper(env)
         
         # Khởi tạo agent với config
         print(f"Đang tải config từ {config_path}")
