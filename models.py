@@ -77,10 +77,9 @@ class DQNNetwork(nn.Module):
     
         output = self.network(flattened)
     
-        # Thêm một số noise nhỏ để tránh các giá trị giống hệt nhau
-        if self.training:
-            output = output + torch.randn_like(output) * 1e-4
-        
+        # Normalize output để tránh Q-values quá lớn
+        output = output / output.abs().max()
+    
         return output
 
 class ReplayBuffer:
@@ -134,13 +133,6 @@ class DQNAgent:
         # Khởi tạo replay buffer
         self.memory = ReplayBuffer(self.agent_config['buffer_size'])
         
-        # Khởi tạo các tham số exploration
-        self.epsilon_start = self.agent_config['exploration_initial_eps']
-        self.epsilon_final = self.agent_config['exploration_final_eps']
-        self.epsilon_decay = self.agent_config['exploration_decay']
-        self.epsilon = self.epsilon_start
-        self.steps = 0
-        
         # Tham số cập nhật target network
         self.target_update = self.agent_config['target_update_interval']
         
@@ -151,14 +143,13 @@ class DQNAgent:
         
         # Tạo thư mục nếu chưa tồn tại
         os.makedirs(self.model_dir, exist_ok=True)
+        
+        self.steps = 0
 
     def select_action(self, state: dict) -> int:
-        """Chọn action với state dạng dict"""
-        if random.random() < self.epsilon:
-            return random.randrange(self.n_actions)
-            
+        """Chọn action dựa trên Q-values"""
         with torch.no_grad():
-            # Chuyển các numpy array trong dict thành tensors
+            # Chuyển state thành tensors
             state_tensors = {
                 'agent_lane': torch.FloatTensor(state['agent_lane']).unsqueeze(0).to(self.device),
                 'obstacles_info': {
@@ -176,9 +167,15 @@ class DQNAgent:
                 }
             }
             
+            # Tính Q-values và normalize
             q_values = self.policy_net(state_tensors)
-            action = q_values.max(1)[1].item()
-            return action
+            
+            # Thêm noise nhỏ để tránh các hành động giống nhau
+            noise = torch.randn_like(q_values) * 0.1
+            q_values = q_values + noise
+            # print(q_values)
+            # print(q_values.max(1)[1].item())
+            return q_values.max(1)[1].item()
             
     def update(self) -> float:
         """Cập nhật model theo phương pháp đã chọn"""
@@ -213,7 +210,7 @@ class DQNAgent:
         return (values - values.mean()) / (values.std() + 1e-7)
 
     def _update_networks(self, loss: torch.Tensor) -> float:
-        """Cập nhật networks và epsilon"""
+        """Cập nhật networks"""
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
@@ -222,8 +219,6 @@ class DQNAgent:
         self.steps += 1
         if self.steps % self.target_update == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
-        
-        self.update_epsilon()
         return loss.item()
 
     def _update_dqn(self) -> float:
@@ -323,7 +318,6 @@ class DQNAgent:
             'policy_net_state_dict': self.policy_net.state_dict(),
             'target_net_state_dict': self.target_net.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'epsilon': self.epsilon,
             'steps': self.steps
         }, path)
         
@@ -333,13 +327,5 @@ class DQNAgent:
         self.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
         self.target_net.load_state_dict(checkpoint['target_net_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.epsilon = checkpoint['epsilon']
         self.steps = checkpoint['steps']
 
-    def update_epsilon(self):
-        """Cập nhật epsilon theo decay schedule"""
-        self.epsilon = max(
-            self.epsilon_final,
-            self.epsilon_start * np.exp(-self.steps * self.epsilon_decay)
-        )
-        

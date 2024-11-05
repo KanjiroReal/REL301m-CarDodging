@@ -48,9 +48,6 @@ def load_agent(config_path: str):
         agent.load(model_path)
         print("Đã tải model thành công")
         
-        # Tắt exploration khi chơi
-        agent.epsilon = 0.0
-        
         return agent, env
         
     except Exception as e:

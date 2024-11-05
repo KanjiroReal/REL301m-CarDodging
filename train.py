@@ -5,6 +5,7 @@ import traceback
 import json
 
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import pygame
 import gymnasium as gym
@@ -43,6 +44,7 @@ def _update_metrics(metrics, reward, loss, elapsed_time):
     metrics['episode_reward'] += reward
     if loss is not None:
         metrics['episode_losses'].append(loss)
+        metrics['current_loss'] = loss  # Thêm current loss để theo dõi
     metrics['current_time'] = elapsed_time
     return metrics
 
@@ -60,8 +62,18 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
             'total_rewards': 0,
             'episode_reward': 0,
             'episode_losses': [],
+            'current_loss': 0,  # Thêm current loss
             'current_time': 0,
-            'steps_per_episode': []
+            'steps_per_episode': [],
+            'best_reward': float('-inf')  # Thêm best reward
+        }
+        
+        interval_metrics = {
+            'episode_count': 0,
+            'total_rewards': 0,
+            'steps': 0,
+            'losses': [],
+            'start_time': time.time()
         }
         
         obs, _ = env.reset()
@@ -126,6 +138,15 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
                         metrics['total_rewards'] += metrics['episode_reward']
                         metrics['steps_per_episode'].append(episode_steps)
                         
+                        # Cập nhật best reward
+                        if metrics['episode_reward'] > metrics['best_reward']:
+                            metrics['best_reward'] = metrics['episode_reward']
+
+                        # Cập nhật interval metrics
+                        interval_metrics['episode_count'] += 1
+                        interval_metrics['total_rewards'] += metrics['episode_reward']
+                        interval_metrics['steps'] += episode_steps
+                        
                         tqdm.write(f"\nEpisode {metrics['episode_count']} - "
                                  f"Reward: {metrics['episode_reward']:.2f} - "
                                  f"Steps: {episode_steps} - "
@@ -154,7 +175,6 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
                         'Episodes': metrics['episode_count'],
                         'Score': f"{metrics['episode_reward']:.1f}",
                         'Avg Steps': f"{avg_steps:.1f}",
-                        'Epsilon': f"{agent.epsilon:.3f}",
                         'Time': f"{elapsed_time:.1f}s"
                     })
                     last_update = current_time
@@ -173,12 +193,18 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
                 if current_time - last_save_time >= 60:
                     last_save_time = current_time
                     agent.save(agent.model_path)
-                    _log_training_stats(metrics, step, agent.model_path)
+                    _log_training_stats(metrics, interval_metrics, step, agent.model_path)
+                    # Reset interval metrics
+                    interval_metrics = {
+                        'episode_count': 0,
+                        'total_rewards': 0,
+                        'steps': 0,
+                        'losses': [],
+                        'start_time': current_time
+                    }
 
         # Lưu model cuối cùng và in thống kê
-        agent.save(agent.model_path)
-        _log_training_stats(metrics, step, agent.model_path)
-        print(f"\nĐã lưu model cuối cùng tại: {agent.model_path}")
+        _log_training_stats(metrics, interval_metrics, step, agent.model_path)
         return agent
 
     except Exception as e:
@@ -186,15 +212,33 @@ def train_agent(agent: DQNAgent, env: gym.Env, total_timesteps: int) -> DQNAgent
         print("".join(traceback.format_exception(type(e), e, e.__traceback__)))
         return agent
 
-def _log_training_stats(metrics, step, model_path):
+def _log_training_stats(metrics, interval_metrics, step, model_path):
     """Log thống kê training"""
-    mean_reward = metrics['total_rewards'] / max(metrics['episode_count'], 1)
+    # Thống kê tổng thể
+    total_mean_reward = metrics['total_rewards'] / max(metrics['episode_count'], 1)
+    total_mean_loss = np.mean(metrics['episode_losses']) if metrics['episode_losses'] else 0
     
-    tqdm.write("\n------------------------")
-    tqdm.write(f"Đã train được: \n  - {metrics['episode_count']} episodes \n  - {step} steps")
-    tqdm.write(f"Điểm trung bình: {mean_reward:.1f}")
-    tqdm.write(f"Đã lưu model tại: {model_path}")
-    tqdm.write("------------------------\n")
+    # Thống kê trong 1 phút
+    interval_time = time.time() - interval_metrics['start_time']
+    interval_mean_reward = interval_metrics['total_rewards'] / max(interval_metrics['episode_count'], 1)
+    interval_mean_loss = np.mean(interval_metrics['losses']) if interval_metrics['losses'] else 0
+    
+    tqdm.write("\n=== THỐNG KÊ TRAINING ===")
+    tqdm.write("--- Tổng thể ---")
+    tqdm.write(f"Tổng số episodes: {metrics['episode_count']}")
+    tqdm.write(f"Tổng số steps: {step}")
+    tqdm.write(f"Điểm trung bình: {total_mean_reward:.2f}")
+    tqdm.write(f"Loss trung bình: {total_mean_loss:.4f}")
+    
+    tqdm.write("\n--- 1 Phút Vừa Qua ---")
+    tqdm.write(f"Số episodes: {interval_metrics['episode_count']}")
+    tqdm.write(f"Số steps: {interval_metrics['steps']}")
+    tqdm.write(f"Điểm trung bình: {interval_mean_reward:.2f}")
+    tqdm.write(f"Loss trung bình: {interval_mean_loss:.4f}")
+    tqdm.write(f"Steps/giây: {interval_metrics['steps']/interval_time:.1f}")
+    
+    tqdm.write(f"\nĐã lưu model tại: {model_path}")
+    tqdm.write("========================\n")
 
 def main() -> None:
     """Hàm chính để huấn luyện và kiểm tra agent"""
